@@ -276,9 +276,28 @@ const bm=()=>BASEMAPS[S.basemap];
 const DATA={
   bangunan:['data/1_Bangunan_3D_Update (5).geojson','data/export_lod1_dengan_tinggi.geojson','data/bangunan.geojson'],
   bidang:  ['data/2_Bidang_Tanah_Update (4).geojson','data/bidang_tanah.geojson','data/bidang.geojson'],
-  batas:   ['data/shp_sukarame.geojson','data/batas_kecamatan.geojson']
+  batas:   ['data/shp_sukarame.geojson','data/shp_sukarame.json','data/batas_kecamatan.geojson','data/batas.geojson']
 };
 let BATAS=null;
+function utmInv(x,y){               // UTM 48S → WGS84 (untuk file batas yang belum direproyeksi)
+  const a=6378137,f=1/298.257223563,k0=0.9996,e2=f*(2-f),ep2=e2/(1-e2),e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2));
+  x-=500000; y-=1e7; const mu=(y/k0)/(a*(1-e2/4-3*e2*e2/64-5*e2**3/256));
+  const p1=mu+(3*e1/2-27*e1**3/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1**4/32)*Math.sin(4*mu)+(151*e1**3/96)*Math.sin(6*mu)+(1097*e1**4/512)*Math.sin(8*mu);
+  const s=Math.sin(p1),c=Math.cos(p1),tn=Math.tan(p1),N1=a/Math.sqrt(1-e2*s*s),T1=tn*tn,C1=ep2*c*c,R1=a*(1-e2)/Math.pow(1-e2*s*s,1.5),D=x/(N1*k0);
+  const lat=p1-(N1*tn/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*D**4/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*D**6/720);
+  const lon=(D-(1+2*T1+C1)*D**3/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*D**5/120)/c;
+  return [105+lon*180/Math.PI,lat*180/Math.PI];
+}
+function normalizeBatas(gj){
+  if(!gj||!gj.features||!gj.features.length) return null;
+  const first=(function f(c){return typeof c[0]==='number'?c:f(c[0])})(gj.features.find(x=>x.geometry).geometry.coordinates);
+  if(Math.abs(first[0])>180||Math.abs(first[1])>90){            // koordinat meter (UTM) → ubah ke lon/lat
+    const mp=c=>typeof c[0]==='number'?utmInv(c[0],c[1]):c.map(mp);
+    gj={type:'FeatureCollection',features:gj.features.filter(x=>x.geometry).map(x=>({type:'Feature',properties:x.properties||{},geometry:{type:x.geometry.type,coordinates:mp(x.geometry.coordinates)}}))};
+    console.info('Batas wilayah: koordinat UTM 48S dikonversi ke lon/lat otomatis');
+  }
+  return gj;
+}
 async function fetchFirst(list,wajib=true){
   for(const u of list){
     try{const r=await fetch(encodeURI(u)); if(r.ok) return {url:u,json:await r.json()};}catch(e){}
@@ -362,11 +381,12 @@ function prepareRaw(bRaw,pRaw){
   applyRemoteAll();
 }
 function afterLoad(R){
-  BATAS=R.batas||null;
+  BATAS=normalizeBatas(R.batas);
+  if(!BATAS) msg('Batas wilayah tidak termuat: file data/shp_sukarame.geojson tidak ditemukan atau kosong. Layer lain tetap tampil.',12000);
   const t0=performance.now(); prepareRaw(R.b,R.p); console.log('Proses data di browser:',Math.round(performance.now()-t0),'ms');
   const l=$('#loading'); if(l) l.remove();
   const go=()=>{ addLayers(); addBatas(); fitData(); };
-  map.isStyleLoaded()?go():map.once('style.load',go);
+  try{ go(); }catch(e){ map.once('style.load',go); }
 }
 /* Cadangan: pilih file GeoJSON secara manual (mis. saat dibuka lewat file://) */
 $('#fileIn').onchange=async e=>{
@@ -507,7 +527,7 @@ function addLayers(){
   applySelection(); addBatas(); applyVis();
 }
 function addBatas(){
-  if(!BATAS||!map.getStyle()) return;
+  if(!BATAS) return;
   if(!map.getSource('batas')) map.addSource('batas',{type:'geojson',data:BATAS});
   if(!map.getLayer('batas-line')) map.addLayer({id:'batas-line',type:'line',source:'batas',paint:{'line-color':'#fbbf24','line-width':2.5,'line-dasharray':[3,2]}},'bangunan-3d');
   applyVis();
