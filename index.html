@@ -529,7 +529,7 @@ function addLayers(){
 function addBatas(){
   if(!BATAS) return;
   if(!map.getSource('batas')) map.addSource('batas',{type:'geojson',data:BATAS});
-  if(!map.getLayer('batas-line')) map.addLayer({id:'batas-line',type:'line',source:'batas',paint:{'line-color':'#ff0000','line-width':2.5,'line-dasharray':[3,2]}},'bangunan-3d');
+  if(!map.getLayer('batas-line')) map.addLayer({id:'batas-line',type:'line',source:'batas',paint:{'line-color':'#ff0000','line-width':2.5,'line-color':[3,2]}},'bangunan-3d');
   applyVis();
 }
 const VIS_LAYERS={bidang:['bidang-fill','bidang-line','bidang-sel'],bangunan:['bangunan-3d','bangunan-sel'],batas:['batas-line']};
