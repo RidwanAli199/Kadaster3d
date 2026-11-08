@@ -124,7 +124,6 @@ window.APP_CFG = { firebase: {
   </select>
   <button class="btn" id="btn3d" title="Ganti 2D / 3D">3D</button>
   <span class="pill" id="cloud">Mode lokal</span>
-  <button class="btn" id="btnLogin" style="display:none">Masuk</button>
   <button class="btn" id="btnExp">⬇ Ekspor</button>
 </header>
 
@@ -144,7 +143,7 @@ window.APP_CFG = { firebase: {
         <p class="src">Sumber: Perda Kota Bandar Lampung No. 07/2014 tentang Bangunan Gedung. Nilai dapat diubah sesuai zona/kawasan.</p>
         <table class="z" id="ztable"></table>
         <div class="note">⚠ KDH mengikuti tabel Perda yang diberikan. Nilai awal KDB &amp; KLB hanyalah <b>nilai contoh</b>, ganti sesuai ketentuan yang berlaku.</div>
-        <div class="note" id="zhint" style="display:none;color:var(--mut)">Masuk (login) untuk mengubah parameter bersama.</div>
+        <div class="note" id="zhint" style="display:none;color:var(--mut)">Menunggu koneksi ke Firestore…</div>
         <div style="margin-top:10px"><button class="btn" id="btnReset">Reset nilai</button></div>
       </div>
     </details>
@@ -210,14 +209,6 @@ window.APP_CFG = { firebase: {
   <div class="actions"><button class="btn save" id="bSave">💾 Simpan</button><button class="btn del" id="bDel">🗑 Hapus</button><button class="btn" id="bReset" title="Kembalikan ke data asli">↩ Asli</button><button class="btn" id="bCancel">Batal</button></div>
 </div></div>
 
-<div id="loginbox"><div class="card">
-  <h3>Masuk</h3>
-  <p class="src">Login diperlukan untuk mengedit, menghapus, dan mengubah parameter. Melihat peta tidak perlu login.</p>
-  <label class="f">Email</label><input type="text" id="lg_email" autocomplete="username">
-  <label class="f">Kata sandi</label><input type="password" id="lg_pw" autocomplete="current-password">
-  <div class="err" id="loginErr"></div>
-  <div class="actions"><button class="btn save" id="loginOk">Masuk</button><button class="btn" id="loginGoogle">Google</button><button class="btn" id="loginCancel">Batal</button></div>
-</div></div>
 <div id="msg"></div>
 
 <!-- Data hasil proses Python (gzip + base64) -->
@@ -300,8 +291,8 @@ const FIELD_B={NIB:'NIB',fungsi:'fungsi',luas_bangunan:'luas_bangunan',lantai:'l
 const canEdit=()=>!CLOUD.configured||(CLOUD.ready&&!!CLOUD.user);
 function gate(){
   if(canEdit()) return true;
-  if(!CLOUD.ready){msg('Belum tersambung ke Firestore. Periksa konfigurasi Firebase / koneksi internet.');return false}
-  openLogin(); return false;
+  msg(CLOUD.err?'Tidak bisa menyimpan: '+CLOUD.err+'. Periksa pengaturan Firebase (Anonymous Auth & Rules).':'Belum tersambung ke Firestore, coba sesaat lagi.');
+  return false;
 }
 function applyRemoteAll(){
   if(!ALL_P.length) return;
@@ -345,25 +336,17 @@ window.APP={
   }
 };
 function updateCloudUI(){
-  const p=$('#cloud'),lb=$('#btnLogin'),ci=$('#cloudInfo'); if(!p) return;
+  const p=$('#cloud'),ci=$('#cloudInfo'); if(!p) return;
   const n=REMOTE.bidang.size+REMOTE.bangunan.size;
-  if(!CLOUD.configured){p.className='pill';p.textContent='Mode lokal';lb.style.display='none';
+  if(!CLOUD.configured){p.className='pill';p.textContent='Mode lokal';
     ci.innerHTML='<b>Mode lokal.</b> Perubahan hanya tersimpan di browser ini (objek diubah: '+n+'). Isi konfigurasi Firebase di bagian atas file (<code>APP_CFG</code>) untuk menyimpan ke Firestore.';return}
-  lb.style.display='';
   if(CLOUD.err){p.className='pill bad';p.textContent='⚠ Cloud error'}
-  else if(!CLOUD.ready){p.className='pill';p.textContent='Menyambung…'}
+  else if(!CLOUD.ready||!CLOUD.user){p.className='pill';p.textContent='Menyambung…'}
   else{p.className='pill ok';p.textContent='☁ Firestore'}
-  lb.textContent=CLOUD.user?'Keluar · '+CLOUD.user.email:'Masuk';
   ci.innerHTML=(CLOUD.err?'<span style="color:var(--bad)">Error: '+esc(CLOUD.err)+'</span><br>':'')+
-    (CLOUD.user?'Masuk sebagai <b>'+esc(CLOUD.user.email)+'</b>. Perubahan disimpan ke Firestore dan langsung tampil bagi semua pengguna.'
-                :'Mode lihat saja. <b>Masuk</b> untuk mengedit, menghapus, dan mengubah parameter.')+'<br>Objek yang diubah: '+n;
+    (CLOUD.user?'Terhubung sebagai <b>'+esc(CLOUD.user.email)+'</b> (anonim). Perubahan disimpan ke Firestore dan langsung tampil bagi semua pengguna.':'Menghubungkan ke Firestore…')+
+    '<br>Objek yang diubah: '+n;
 }
-function openLogin(){$('#loginErr').textContent='';$('#loginbox').style.display='flex'}
-const authMsg=e=>({'auth/invalid-credential':'Email atau kata sandi salah.','auth/invalid-email':'Format email tidak valid.','auth/unauthorized-domain':'Domain ini belum diizinkan di Firebase Authentication → Settings → Authorized domains.','auth/popup-closed-by-user':'Jendela login ditutup.','auth/operation-not-allowed':'Metode login ini belum diaktifkan di Firebase Authentication.','auth/too-many-requests':'Terlalu banyak percobaan, coba lagi nanti.'}[e.code]||('Gagal masuk: '+(e.code||e.message)));
-$('#loginCancel').onclick=()=>$('#loginbox').style.display='none';
-$('#loginOk').onclick=async()=>{try{await CLOUD.login($('#lg_email').value.trim(),$('#lg_pw').value);$('#loginbox').style.display='none';$('#lg_pw').value=''}catch(e){$('#loginErr').textContent=authMsg(e)}};
-$('#loginGoogle').onclick=async()=>{try{await CLOUD.google();$('#loginbox').style.display='none'}catch(e){$('#loginErr').textContent=authMsg(e)}};
-$('#btnLogin').onclick=()=>{ if(CLOUD.user){ if(confirm('Keluar dari akun?')) CLOUD.logout(); } else if(CLOUD.ready) openLogin(); else msg('Belum tersambung ke Firestore.'); };
 function fitData(){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   const walk=c=>typeof c[0]==='number'?(x0=Math.min(x0,c[0]),x1=Math.max(x1,c[0]),y0=Math.min(y0,c[1]),y1=Math.max(y1,c[1])):c.forEach(walk);
@@ -664,20 +647,18 @@ if(cfg.apiKey){
     const app=A.initializeApp(cfg);
     let db; try{db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})})}catch(e){db=F.getFirestore(app)}
     const auth=Au.getAuth(app);
-    const who=()=>(auth.currentUser&&(auth.currentUser.email||auth.currentUser.uid))||'';
+    const who=()=>auth.currentUser?'anonim-'+auth.currentUser.uid.slice(0,5):'';
     const conv=s=>s.docs.map(d=>{const x=d.data();return [d.id,{...x,updatedAt:x.updatedAt&&x.updatedAt.toMillis?x.updatedAt.toMillis():0}]});
     const C=window.__CLOUD__={};
     // Dipasang ke objek CLOUD milik aplikasi lewat APP (lihat di bawah)
     const API={
       save:(kind,id,patch)=>F.setDoc(F.doc(db,kind,id),{...patch,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true}),
       remove:(kind,id)=>F.deleteDoc(F.doc(db,kind,id)),
-      saveConfig:c=>F.setDoc(F.doc(db,'config','parameter'),{...c,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true}),
-      login:(e,p)=>Au.signInWithEmailAndPassword(auth,e,p),
-      google:()=>Au.signInWithPopup(auth,new Au.GoogleAuthProvider()),
-      logout:()=>Au.signOut(auth)
+      saveConfig:c=>F.setDoc(F.doc(db,'config','parameter'),{...c,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true})
     };
     window.APP.attach(API);
-    Au.onAuthStateChanged(auth,u=>window.APP.setUser(u?{email:u.email||u.displayName||u.uid,uid:u.uid}:null));
+    Au.onAuthStateChanged(auth,u=>window.APP.setUser(u?{email:'anonim-'+u.uid.slice(0,5),uid:u.uid}:null));
+    Au.signInAnonymously(auth).catch(e=>window.APP.cloudError(e.code==='auth/operation-not-allowed'||e.code==='auth/admin-restricted-operation'?{code:'Anonymous Auth belum diaktifkan (Firebase Console → Authentication → Sign-in method → Anonymous)'}:e));
     const err=e=>window.APP.cloudError(e);
     F.onSnapshot(F.collection(db,'bidang'),s=>window.APP.setRemote('bidang',conv(s)),err);
     F.onSnapshot(F.collection(db,'bangunan'),s=>window.APP.setRemote('bangunan',conv(s)),err);
