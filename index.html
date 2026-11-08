@@ -310,10 +310,22 @@ function applyRemoteAll(){
 }
 function persistLocal(){store.set('overrides',{bidang:[...REMOTE.bidang],bangunan:[...REMOTE.bangunan]})}
 function cloudFail(e){msg('Gagal menyimpan ke Firestore: '+(e&&(e.code||e.message)||e)+'. Perubahan belum tersimpan di server.',0)}
+/* Rekaman LENGKAP sebuah objek (semua kolom), bukan hanya kolom yang diubah */
+const r2=v=>Math.round((+v||0)*100)/100;
+function fullRecord(kind,id){
+  const f=[...ALL_P,...ALL_B].find(x=>x.properties._id===id); if(!f) return null; const q=f.properties;
+  if(kind==='bidang') return {id:q._id,NIB:q.NIB,tipe_hak:q.tipe_hak,status:q.status,zona:q.zona,luas:r2(q._luas),deleted:!!q._del,
+    n_bangunan:q._n||0,luas_tapak:r2(q._fp),luas_lantai:r2(q._fl),zona_pakai:q._z||'',kdb_aktual:r2(q._luas?q._fp/q._luas*100:0),klb_aktual:r2(q._luas?q._fl/q._luas:0),kepatuhan:q._ok||''};
+  return {id:q._id,pid:q._pid0||'',NIB:q.NIB,fungsi:q.fungsi,height_m:q.height_m,tinggi:q._h,luas_bangunan:r2(q.luas_bangunan),luas_bidang:r2(q.luas_bidang),
+    tipe_hak:q.tipe_hak,status:q.status,lantai:q.lantai||0,jumlah_lantai:lantaiOf(q),deleted:!!q._del,kepatuhan:q._ok||''};
+}
 function saveEntity(kind,id,patch){
   REMOTE[kind].set(id,Object.assign({},REMOTE[kind].get(id)||{},patch));
-  if(CLOUD.configured) CLOUD.save(kind,id,patch).catch(cloudFail); else persistLocal();
-  applyRemoteAll();
+  applyRemoteAll();                       // hitung nilai efektif terbaru
+  if(CLOUD.configured){
+    const rec=fullRecord(kind,id)||patch; // tulis SEMUA kolom objek ke Firestore
+    CLOUD.save(kind,id,rec).catch(cloudFail);
+  } else persistLocal();
 }
 function resetEntity(kind,id){
   REMOTE[kind].delete(id);
