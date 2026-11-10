@@ -1030,7 +1030,7 @@ function syncAoi(){
       if(!map.getSource(s)){ map.addSource(s,{type:'geojson',data:a.fc}); AOI_DRAWN.set(a.id,a.fc) }
       else if(AOI_DRAWN.get(a.id)!==a.fc){ map.getSource(s).setData(a.fc); AOI_DRAWN.set(a.id,a.fc) }
       if(!map.getLayer(aoiLay('fill',a.id))){
-        map.addLayer({id:aoiLay('fill',a.id),type:'fill',source:s,filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':a.warna,'fill-opacity':0.18}},before);
+        map.addLayer({id:aoiLay('fill',a.id),type:'fill',source:s,filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':a.warna,'fill-opacity':0}},before);
         map.addLayer({id:aoiLay('line',a.id),type:'line',source:s,paint:{'line-color':a.warna,'line-width':2.5,'line-dasharray':[2,1.5]}},before);
         map.addLayer({id:aoiLay('pts',a.id),type:'circle',source:s,filter:['==',['geometry-type'],'Point'],paint:{'circle-radius':5,'circle-color':a.warna,'circle-stroke-color':'#ffffff','circle-stroke-width':1.5}},before);
       }
