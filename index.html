@@ -88,6 +88,12 @@ input:disabled{opacity:.45;cursor:not-allowed}
 .pill.bad{background:rgba(248,113,113,.12);color:var(--bad);border-color:#7a2d33}
 #loginbox{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:30}
 .err{color:var(--bad);font-size:12px;min-height:16px;margin-top:8px}
+.aoi-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--line)}
+.aoi-row input{width:auto;margin:0}
+.aoi-sw{width:12px;height:12px;border-radius:3px;flex:none;border:1px solid rgba(255,255,255,.35)}
+.aoi-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.aoi-n small{display:block;color:var(--mut);font-weight:500;font-size:10.5px}
+.aoi-row .btn{padding:4px 8px;font-size:12px}
 @media(max-width:820px){
   #top h1 small{display:none}
   #left{position:fixed;top:var(--hh);left:0;bottom:0;z-index:15;width:min(340px,92vw)}
@@ -145,6 +151,9 @@ window.APP_CFG = { firebase: {
       <div class="dbody">
         <p class="src" id="drawInfo">Gambar bidang tanah (2D) atau bangunan (3D) baru langsung di peta. Hasilnya tersimpan di Firestore (koleksi <code>bidang_digit</code> / <code>bangunan_digit</code>) dan tampil bagi semua pengguna.</p>
         <div class="drawbtns"><button class="btn edit" id="btnDrawP">＋ Bidang tanah (2D)</button><button class="btn edit" id="btnDrawB">＋ Bangunan (3D)</button></div>
+        <button class="btn edit" id="btnAoi" style="width:100%;margin-top:8px" title="Impor file GeoJSON sebagai AOI (layer referensi digitasi)">⬆ Impor AOI (GeoJSON)</button>
+        <input type="file" id="aoiIn" accept=".geojson,.json" multiple style="display:none">
+        <p class="src" style="margin:6px 0 0">AOI tampil sebagai layer referensi (tidak ikut perhitungan KDB/KLB). Sembunyikan atau hapus di panel Layer.</p>
         <label class="chk"><input type="checkbox" id="snapOn" checked> Snap ke titik terdekat (bidang/bangunan)</label>
         <p class="src" style="margin-top:8px">Klik untuk menambah titik · klik titik pertama / dobel-klik / Enter = selesai · Backspace = urungkan · Esc = batal.</p>
       </div>
@@ -155,6 +164,8 @@ window.APP_CFG = { firebase: {
         <label><input type="checkbox" data-vis="bangunan" style="width:auto"> Bangunan 3D</label>
         <label><input type="checkbox" data-vis="bidang" style="width:auto"> Bidang tanah</label>
         <label><input type="checkbox" data-vis="batas" style="width:auto"> Batas wilayah (Sukarame)</label>
+        <div class="sec" style="margin:8px 0 0">AOI (impor GeoJSON)</div>
+        <div id="aoiList"></div>
       </div>
     </details>
     <details open>
@@ -540,6 +551,7 @@ window.APP={
   cloudError(e){CLOUD.err=(e&&(e.code||e.message))||String(e);updateCloudUI();msg('Firestore: '+CLOUD.err,0)},
   setRemote(kind,docs){REMOTE[kind]=new Map(docs);applyRemoteAll()},
   setDigit(kind,docs){DIGIT[kind]=new Map(docs);rebuildDigit();applyRemoteAll()},
+  setAoi(docs){aoiSetCloud(docs)},
   setConfig(c){
     if(c.zona) for(const k in c.zona) if(ZONA[k]) Object.assign(ZONA[k],c.zona[k]);
     if(c.tinggiLantai>0) S.tinggiLantai=c.tinggiLantai;
@@ -608,7 +620,7 @@ function addLayers(){
     'fill-extrusion-color':colorExpr('bangunan'),'fill-extrusion-height':['get','_h'],'fill-extrusion-base':0,'fill-extrusion-opacity':0.92}});
   map.addLayer({id:'bangunan-sel',type:'fill-extrusion',source:'bangunan',filter:['==',['get','_id'],''],paint:{
     'fill-extrusion-color':'#00e5ff','fill-extrusion-height':['+',['get','_h'],0.4],'fill-extrusion-base':0,'fill-extrusion-opacity':1}});
-  applySelection(); addBatas(); applyVis(); addDrawLayers();
+  applySelection(); addBatas(); applyVis(); addDrawLayers(); syncAoi();
 }
 function addBatas(){
   if(!BATAS) return;
@@ -924,6 +936,130 @@ document.addEventListener('keydown',e=>{
 $('#btnDrawP').onclick=()=>drawStart('bidang'); $('#btnDrawB').onclick=()=>drawStart('bangunan');
 $('#dUndo').onclick=drawUndo; $('#dDone').onclick=drawFinish; $('#dCancel').onclick=drawCancel;
 
+/* ================= AOI DIGITASI: impor GeoJSON → layer referensi (hide/unhide/hapus) ================= */
+/* Disimpan di Firestore (koleksi aoi_layers) sebagai satu dokumen per layer; geometri berupa string JSON (Firestore tidak
+   mengizinkan array bersarang). File > ~900 KB tidak muat di 1 dokumen → hanya aktif di sesi ini. Hide/unhide bersifat
+   per-pengguna (disimpan di browser), tidak ditulis ke Firestore. */
+const AOI_MAX=900000, AOI_COLORS=['#ff9f1c','#e83e8c','#7c4dff','#2ec4b6','#ffd60a','#ff5d5d'];
+const AOI_CLOUD=new Map(), AOI_LOCAL=new Map(), AOI_DRAWN=new Map();
+let AOI_HIDE=store.get('aoiHide',{})||{};
+const aoiAll=()=>[...AOI_CLOUD.values(),...AOI_LOCAL.values()];
+const aoiLay=(t,id)=>'aoi-'+t+'-'+id;
+const aoiColor=c=>/^#[0-9a-f]{6}$/i.test(c||'')?c:AOI_COLORS[0];
+function aoiNormalize(gj){
+  const OK={Polygon:1,MultiPolygon:1,LineString:1,MultiLineString:1,Point:1,MultiPoint:1}, gs=[];
+  const add=g=>{ if(!g) return; if(g.type==='GeometryCollection') (g.geometries||[]).forEach(add); else if(OK[g.type]&&Array.isArray(g.coordinates)) gs.push(g) };
+  if(gj&&gj.type==='FeatureCollection') (gj.features||[]).forEach(f=>f&&add(f.geometry)); else if(gj&&gj.type==='Feature') add(gj.geometry); else add(gj);
+  if(!gs.length) return null;
+  let proj=false,bad=false;
+  const chk=c=>{ if(typeof c[0]==='number'){ if(!isFinite(c[0])||!isFinite(c[1])) bad=true; else if(Math.abs(c[0])>180||Math.abs(c[1])>90) proj=true } else c.forEach(chk) };
+  gs.forEach(g=>chk(g.coordinates)); if(bad) return null;
+  const r7=v=>Math.round(v*1e7)/1e7;
+  const mp=c=>typeof c[0]==='number'?(proj?utmInv(c[0],c[1]):[c[0],c[1]]).map(r7):c.map(mp);   // buang Z, bulatkan 7 desimal, UTM 48S → lon/lat bila perlu
+  const out=gs.map(g=>({type:'Feature',properties:{},geometry:{type:g.type,coordinates:mp(g.coordinates)}}));
+  let ok=true; const chk2=c=>{ if(typeof c[0]==='number'){ if(Math.abs(c[0])>180||Math.abs(c[1])>90) ok=false } else c.forEach(chk2) };
+  out.forEach(f=>chk2(f.geometry.coordinates)); return ok?fc(out):null;
+}
+function aoiBounds(f){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  const w=c=>typeof c[0]==='number'?(x0=Math.min(x0,c[0]),x1=Math.max(x1,c[0]),y0=Math.min(y0,c[1]),y1=Math.max(y1,c[1])):c.forEach(w);
+  f.features.forEach(x=>w(x.geometry.coordinates)); return x0<1e9?[[x0,y0],[x1,y1]]:null;
+}
+function aoiFit(id){
+  const a=AOI_CLOUD.get(id)||AOI_LOCAL.get(id); if(!a||!map) return;
+  const b=aoiBounds(a.fc); if(b) map.fitBounds(b,{padding:60,duration:600,maxZoom:19});
+}
+function aoiPersistLocal(){
+  if(CLOUD.configured) return;
+  try{ localStorage.setItem('aoi',JSON.stringify([...AOI_LOCAL.values()].filter(a=>!a.mem).map(a=>({id:a.id,name:a.name,warna:a.warna,raw:a.raw})))) }
+  catch(e){ msg('Penyimpanan browser penuh; layer AOI hanya aktif selama sesi ini.',6000) }
+}
+async function aoiImport(files){
+  for(const f of files){
+    let gj; try{ gj=JSON.parse(await f.text()) }catch(e){ msg('“'+f.name+'” bukan file GeoJSON/JSON yang valid.',6000); continue }
+    const fcx=aoiNormalize(gj);
+    if(!fcx){ msg('“'+f.name+'”: tidak ada geometri valid atau koordinat tidak dikenali (harus WGS84 lon/lat atau UTM 48S).',8000); continue }
+    const raw=JSON.stringify(fcx), bytes=new Blob([raw]).size, id='aoi_'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+    const name=f.name.replace(/\.(geo)?json$/i,'').slice(0,120)||'AOI', warna=AOI_COLORS[(AOI_CLOUD.size+AOI_LOCAL.size)%AOI_COLORS.length];
+    const base={id,name,warna,n:fcx.features.length,fc:fcx,raw};
+    if(bytes<=AOI_MAX){
+      if(CLOUD.configured){
+        if(!gate()) return;
+        AOI_CLOUD.set(id,Object.assign({src:'cloud'},base));      // tampil segera; snapshot Firestore menyinkronkan
+        CLOUD.saveAoi(id,{name,warna,jumlah:base.n,geojson:raw}).catch(e=>{AOI_CLOUD.delete(id);syncAoi();cloudFail(e)});
+      }else{ AOI_LOCAL.set(id,Object.assign({src:'local',mem:false},base)); aoiPersistLocal() }
+    }else{
+      AOI_LOCAL.set(id,Object.assign({src:'local',mem:true},base));
+      msg('“'+name+'” ('+fmt(bytes/1024,0)+' KB) terlalu besar untuk disimpan di Firestore (maks ± 900 KB). Layer tetap tampil, tetapi hilang saat halaman dimuat ulang.',10000);
+    }
+    syncAoi(); aoiFit(id);
+  }
+}
+function aoiSetCloud(docs){
+  const next=new Map();
+  docs.forEach(([id,d])=>{
+    const old=AOI_CLOUD.get(id); let fcx=null;
+    if(old&&old.raw===d.geojson) fcx=old.fc; else { try{ fcx=JSON.parse(d.geojson) }catch(e){} }
+    if(!fcx||!Array.isArray(fcx.features)) return;
+    next.set(id,{id,src:'cloud',name:d.name||'AOI',warna:aoiColor(d.warna),n:d.jumlah||fcx.features.length,fc:fcx,raw:d.geojson});
+  });
+  AOI_CLOUD.clear(); next.forEach((v,k)=>AOI_CLOUD.set(k,v)); syncAoi();
+}
+function aoiDelete(id){
+  const a=AOI_CLOUD.get(id)||AOI_LOCAL.get(id); if(!a) return;
+  if(a.src==='cloud'&&!gate()) return;
+  if(!confirm('Hapus layer AOI “'+a.name+'”'+(a.src==='cloud'?' (untuk semua pengguna)':'')+'?')) return;
+  if(a.src==='cloud'){ AOI_CLOUD.delete(id); CLOUD.removeAoi(id).catch(cloudFail) } else { AOI_LOCAL.delete(id); aoiPersistLocal() }
+  delete AOI_HIDE[id]; store.set('aoiHide',AOI_HIDE); syncAoi();
+}
+function aoiToggle(id,on){
+  if(on) delete AOI_HIDE[id]; else AOI_HIDE[id]=1; store.set('aoiHide',AOI_HIDE);
+  try{ ['fill','line','pts'].forEach(t=>{ if(map.getLayer(aoiLay(t,id))) map.setLayoutProperty(aoiLay(t,id),'visibility',on?'visible':'none') }) }catch(e){}
+}
+function syncAoi(){
+  aoiRenderList();
+  if(!map) return;
+  try{
+    const st=map.getStyle(); if(!st) return;
+    const all=aoiAll(), ids=new Set(all.map(a=>a.id));
+    st.layers.forEach(l=>{ const m=/^aoi-(fill|line|pts)-(.+)$/.exec(l.id); if(m&&!ids.has(m[2])) map.removeLayer(l.id) });
+    Object.keys(st.sources).forEach(s=>{ const m=/^aoi-src-(.+)$/.exec(s); if(m&&!ids.has(m[1])&&map.getSource(s)) map.removeSource(s) });
+    const before=map.getLayer('draw-fill')?'draw-fill':undefined;      // sketsa digitasi tetap di atas AOI
+    all.forEach(a=>{
+      const s='aoi-src-'+a.id;
+      if(!map.getSource(s)){ map.addSource(s,{type:'geojson',data:a.fc}); AOI_DRAWN.set(a.id,a.fc) }
+      else if(AOI_DRAWN.get(a.id)!==a.fc){ map.getSource(s).setData(a.fc); AOI_DRAWN.set(a.id,a.fc) }
+      if(!map.getLayer(aoiLay('fill',a.id))){
+        map.addLayer({id:aoiLay('fill',a.id),type:'fill',source:s,filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':a.warna,'fill-opacity':0.18}},before);
+        map.addLayer({id:aoiLay('line',a.id),type:'line',source:s,paint:{'line-color':a.warna,'line-width':2.5,'line-dasharray':[2,1.5]}},before);
+        map.addLayer({id:aoiLay('pts',a.id),type:'circle',source:s,filter:['==',['geometry-type'],'Point'],paint:{'circle-radius':5,'circle-color':a.warna,'circle-stroke-color':'#ffffff','circle-stroke-width':1.5}},before);
+      }
+      const v=AOI_HIDE[a.id]?'none':'visible';
+      ['fill','line','pts'].forEach(t=>map.setLayoutProperty(aoiLay(t,a.id),'visibility',v));
+    });
+  }catch(e){ /* style belum siap: addLayers() memanggil syncAoi lagi saat style.load */ }
+}
+function aoiRenderList(){
+  const el=$('#aoiList'); if(!el) return; const all=aoiAll();
+  if(!all.length){ el.innerHTML='<p class="src" style="margin:0">Belum ada AOI. Impor lewat tombol di panel Digitasi.</p>'; return }
+  el.innerHTML=all.map(a=>`<div class="aoi-row" data-id="${a.id}">
+    <input type="checkbox" class="aoi-v" ${AOI_HIDE[a.id]?'':'checked'} title="Tampilkan / sembunyikan">
+    <i class="aoi-sw" style="background:${a.warna}"></i>
+    <span class="aoi-n" title="${esc(a.name)}">${esc(a.name)}<small>${a.n} objek${a.mem?' · hanya sesi ini':''}</small></span>
+    <button class="btn aoi-z" title="Zoom ke layer">⌖</button><button class="btn del aoi-d" title="Hapus layer">🗑</button></div>`).join('');
+}
+$('#aoiList').addEventListener('click',e=>{
+  const row=e.target.closest('.aoi-row'); if(!row) return; const id=row.dataset.id;
+  if(e.target.closest('.aoi-z')) aoiFit(id); else if(e.target.closest('.aoi-d')) aoiDelete(id);
+});
+$('#aoiList').addEventListener('change',e=>{ if(e.target.classList.contains('aoi-v')) aoiToggle(e.target.closest('.aoi-row').dataset.id,e.target.checked) });
+$('#btnAoi').onclick=()=>$('#aoiIn').click();
+$('#aoiIn').onchange=async e=>{ await aoiImport([...e.target.files]); e.target.value='' };
+if(!CLOUD.configured){
+  (store.get('aoi',[])||[]).forEach(d=>{ try{ const f=JSON.parse(d.raw); if(f&&Array.isArray(f.features)) AOI_LOCAL.set(d.id,{id:d.id,src:'local',mem:false,name:d.name||'AOI',warna:aoiColor(d.warna),n:f.features.length,fc:f,raw:d.raw}) }catch(e){} });
+}
+aoiRenderList();
+
 /* ================= PENGATURAN ================= */
 function buildSettings(){
   $('#ztable').innerHTML='<tr><th>Zona</th><th>KDB %</th><th>KLB</th><th>KDH %</th></tr>'+Object.entries(ZONA).map(([k,z])=>
@@ -989,7 +1125,10 @@ if(cfg.apiKey){
       saveConfig:c=>F.setDoc(F.doc(db,'config','parameter'),{...c,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true}),
       // digitasi: dokumen baru memuat createdBy/createdAt; semua kolom + koordinat ditulis penuh
       saveDigit:(col,id,rec,isNew)=>F.setDoc(F.doc(db,col,id),{...rec,updatedBy:who(),updatedAt:F.serverTimestamp(),...(isNew?{createdBy:who(),createdAt:F.serverTimestamp()}:{})},{merge:true}),
-      removeDigit:(col,id)=>F.deleteDoc(F.doc(db,col,id))
+      removeDigit:(col,id)=>F.deleteDoc(F.doc(db,col,id)),
+      // AOI hasil impor GeoJSON (geometri disimpan sebagai string JSON)
+      saveAoi:(id,d)=>F.setDoc(F.doc(db,'aoi_layers',id),{...d,createdBy:who(),createdAt:F.serverTimestamp()}),
+      removeAoi:id=>F.deleteDoc(F.doc(db,'aoi_layers',id))
     };
     window.APP.attach(API);
     Au.onAuthStateChanged(auth,u=>window.APP.setUser(u?{email:'anonim-'+u.uid.slice(0,5),uid:u.uid}:null));
@@ -999,6 +1138,7 @@ if(cfg.apiKey){
     F.onSnapshot(F.collection(db,'bangunan'),s=>window.APP.setRemote('bangunan',conv(s)),err);
     F.onSnapshot(F.collection(db,'bidang_digit'),s=>window.APP.setDigit('bidang',conv(s)),err);
     F.onSnapshot(F.collection(db,'bangunan_digit'),s=>window.APP.setDigit('bangunan',conv(s)),err);
+    F.onSnapshot(F.collection(db,'aoi_layers'),s=>window.APP.setAoi(conv(s)),err);
     F.onSnapshot(F.doc(db,'config','parameter'),s=>{if(s.exists())window.APP.setConfig(s.data())},err);
     window.APP.setReady(true);
   }catch(e){ console.error(e); window.APP.cloudError(e); }
