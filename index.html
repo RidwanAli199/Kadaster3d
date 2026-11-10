@@ -77,6 +77,11 @@ select:focus,input:focus{border-color:var(--acc)}
 #msg{cursor:pointer;line-height:1.45;position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#3a1518;border:1px solid #7a2d33;padding:10px 14px;border-radius:10px;z-index:40;display:none;max-width:90vw}
 #loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(11,13,16,.7);z-index:3;color:var(--acc);font-weight:700}
 .maplibregl-ctrl-bottom-left{z-index:1}
+/* digitasi */
+#drawbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:4;display:none;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;background:rgba(20,23,28,.96);border:1px solid var(--acc);border-radius:10px;padding:8px 10px;max-width:calc(100% - 120px);box-shadow:0 6px 22px rgba(0,0,0,.45)}
+#drawbar #drawtxt{font-size:12px;font-weight:700;color:var(--acc)}
+.drawbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chk{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--mut)}.chk input{width:auto}
 input:disabled{opacity:.45;cursor:not-allowed}
 .pill{font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:99px;background:#23282f;color:var(--mut);border:1px solid var(--line);white-space:nowrap}
 .pill.ok{background:rgba(74,222,128,.12);color:var(--ok);border-color:#235c3a}
@@ -136,6 +141,15 @@ window.APP_CFG = { firebase: {
       <div class="dbody"><div class="cards" id="stats"></div></div>
     </details>
     <details open>
+      <summary>Digitasi</summary>
+      <div class="dbody">
+        <p class="src" id="drawInfo">Gambar bidang tanah (2D) atau bangunan (3D) baru langsung di peta. Hasilnya tersimpan di Firestore (koleksi <code>bidang_digit</code> / <code>bangunan_digit</code>) dan tampil bagi semua pengguna.</p>
+        <div class="drawbtns"><button class="btn edit" id="btnDrawP">＋ Bidang tanah (2D)</button><button class="btn edit" id="btnDrawB">＋ Bangunan (3D)</button></div>
+        <label class="chk"><input type="checkbox" id="snapOn" checked> Snap ke titik terdekat (bidang/bangunan)</label>
+        <p class="src" style="margin-top:8px">Klik untuk menambah titik · klik titik pertama / dobel-klik / Enter = selesai · Backspace = urungkan · Esc = batal.</p>
+      </div>
+    </details>
+    <details open>
       <summary>Layer</summary>
       <div class="dbody" style="display:grid;gap:6px">
         <label><input type="checkbox" data-vis="bangunan" style="width:auto"> Bangunan 3D</label>
@@ -180,6 +194,7 @@ window.APP_CFG = { firebase: {
   <div id="mapwrap">
     <div id="map"></div>
     <div id="legend"></div>
+    <div id="drawbar"><span id="drawtxt"></span><button class="btn" id="dUndo">↶ Urungkan</button><button class="btn save" id="dDone">✔ Selesai</button><button class="btn del" id="dCancel">✕ Batal</button></div>
     <div id="loading">Memuat data…</div>
   </div>
 
@@ -193,7 +208,7 @@ window.APP_CFG = { firebase: {
   <input type="text" id="e_nib" placeholder="Contoh: 08.01.01.01.12345">
   <div class="g2">
     <div id="g_lb"><label class="f">Luas Bangunan (m²):</label><input type="number" step="any" id="e_lb"></div>
-    <div><label class="f">Luas Bidang (m²):</label><input type="number" step="any" id="e_lbd"></div>
+    <div id="g_lbd"><label class="f">Luas Bidang (m²):</label><input type="number" step="any" id="e_lbd"></div>
   </div>
   <div id="g_fungsi">
     <label class="f">Fungsi Bangunan:</label>
@@ -207,15 +222,17 @@ window.APP_CFG = { firebase: {
     </select>
     <label class="f">Jumlah lantai (kosongkan = estimasi dari tinggi):</label>
     <input type="number" id="e_lantai" min="1" step="1">
+    <div id="g_tinggi" style="display:none"><label class="f">Tinggi bangunan (m), untuk tampilan 3D:</label>
+    <input type="number" id="e_tinggi" min="0" step="0.5" placeholder="kosong = lantai × tinggi per lantai"></div>
   </div>
-  <div class="g2">
+  <div class="g2" id="g_hs">
     <div><label class="f">Tipe Hak:</label>
       <select id="e_hak"><option value="">-- Pilih --</option><option>SHM</option><option>HGB</option><option>Hak Pakai</option><option>Girik</option><option>Tanah Negara</option></select></div>
     <div><label class="f">Status Tanah:</label>
       <select id="e_status"><option value="">-- Pilih --</option><option>Aman</option><option>Proses BPN</option><option>Sengketa</option></select></div>
   </div>
-  <label class="f">Zona (override bidang ini):</label>
-  <select id="e_zona"></select>
+  <div id="g_zona"><label class="f">Zona (override bidang ini):</label>
+  <select id="e_zona"></select></div>
   <div class="actions"><button class="btn save" id="bSave">💾 Simpan</button><button class="btn del" id="bDel">🗑 Hapus</button><button class="btn" id="bReset" title="Kembalikan ke data asli">↩ Asli</button><button class="btn" id="bCancel">Batal</button></div>
 </div></div>
 
@@ -356,6 +373,7 @@ function prepareRaw(bRaw,pRaw){
   ALL_P.forEach((f,i)=>{const [x0,y0,x1,y1]=bb[i];
     for(let x=Math.floor(x0/GCS);x<=Math.floor(x1/GCS);x++)for(let y=Math.floor(y0/GCS);y<=Math.floor(y1/GCS);y++){
       const k=x+'_'+y;(grid.get(k)||grid.set(k,[]).get(k)).push(i)}});
+  PGRID=grid; ALL_P.forEach((f,i)=>{f._bb=bb[i]});
   // spatial join: bangunan → bidang dengan irisan terbesar (perkiraan lewat titik-sampel grid di dalam bangunan)
   const NS=7;
   ALL_B.forEach(b=>{
@@ -378,6 +396,7 @@ function prepareRaw(bRaw,pRaw){
   });
   const keep=(f,keys)=>{f._base={};keys.forEach(k=>f._base[k]=f.properties[k])};
   ALL_P.forEach(f=>keep(f,Object.values(FIELD_P))); ALL_B.forEach(f=>keep(f,Object.values(FIELD_B)));
+  rebuildDigit();
   applyRemoteAll();
 }
 function afterLoad(R){
@@ -401,6 +420,56 @@ $('#fileIn').onchange=async e=>{
 $('#btnFile').onclick=()=>$('#fileIn').click();
 
 /* ===== Lapisan perubahan: data asli (tertanam) + override (Firestore / localStorage) ===== */
+/* ===== Digitasi manual: objek baru disimpan di koleksi bidang_digit / bangunan_digit ===== */
+const DIGIT={bidang:new Map(),bangunan:new Map()};
+const DIGIT_COL={bidang:'bidang_digit',bangunan:'bangunan_digit'};
+let DIG_P=[],DIG_B=[],PGRID=null;
+// Firestore tidak mengizinkan array bersarang → koordinat disimpan sebagai array datar [lon1,lat1,lon2,lat2,...] (cincin luar, tanpa titik penutup)
+const flatCoords=g=>g.coordinates[0].slice(0,-1).flatMap(c=>[Math.round(c[0]*1e7)/1e7,Math.round(c[1]*1e7)/1e7]);
+function unflatCoords(a){const r=[];for(let i=0;i+1<a.length;i+=2)r.push([a[i],a[i+1]]);r.push(r[0]);return {type:'Polygon',coordinates:[r]}}
+function mkDigit(kind,id,d){
+  if(!d||!Array.isArray(d.koordinat)||d.koordinat.length<6) return null;
+  const g=unflatCoords(d.koordinat);
+  const base={_id:id,_dig:true,_del:false,_mod:true,_by:d.updatedBy||d.createdBy||'',_at:d.updatedAt||d.createdAt||0,
+    NIB:d.NIB||'',tipe_hak:d.tipe_hak||'',status:d.status||''};
+  const area=Math.round(geomArea(g)*100)/100;
+  let props;
+  if(kind==='bidang') props=Object.assign(base,{zona:d.zona||'',luas_bidang:0,_luas:+d.luas>0?+d.luas:area});
+  else{
+    const h=+d.tinggi>0?+d.tinggi:(+d.lantai>0?+d.lantai*S.tinggiLantai:T_DEF);
+    props=Object.assign(base,{_pid0:'',fungsi:d.fungsi||'',height_m:h,_h:h,luas_bangunan:+d.luas_bangunan>0?+d.luas_bangunan:area,luas_bidang:0,lantai:+d.lantai||0});
+  }
+  return {type:'Feature',geometry:g,properties:props,_bb:bboxOf(g)};
+}
+function samplePts(g){
+  const bx=bboxOf(g), pts=[], NS=7;
+  for(let i=0;i<NS;i++)for(let j=0;j<NS;j++){
+    const x=bx[0]+(bx[2]-bx[0])*(i+.5)/NS, y=bx[1]+(bx[3]-bx[1])*(j+.5)/NS; if(pip(x,y,g)) pts.push([x,y]);
+  }
+  if(pts.length<3){const ring=(g.type==='Polygon'?g.coordinates[0]:g.coordinates[0][0]).slice(0,-1); ring.forEach(c=>pts.push(c));
+    pts.push([ring.reduce((s,c)=>s+c[0],0)/ring.length,ring.reduce((s,c)=>s+c[1],0)/ring.length]);}
+  return pts;
+}
+function voteJoin(b,lookup){          // bidang dengan titik-sampel bangunan terbanyak
+  const pts=samplePts(b.geometry), hit=new Map();
+  for(const [x,y] of pts) for(const f of lookup(x,y)){
+    const q=f._bb; if(x<q[0]||x>q[2]||y<q[1]||y>q[3]) continue;
+    if(pip(x,y,f.geometry)){const id=f.properties._id; hit.set(id,(hit.get(id)||0)+1); break}
+  }
+  let best='',n=0; hit.forEach((c,id)=>{if(c>n){n=c;best=id}});
+  return best&&n/pts.length>=MIN_OVERLAP?best:'';
+}
+function rebuildDigit(){
+  DIG_P=[];DIG_B=[];
+  DIGIT.bidang.forEach((d,id)=>{const f=mkDigit('bidang',id,d); if(f) DIG_P.push(f)});
+  DIGIT.bangunan.forEach((d,id)=>{const f=mkDigit('bangunan',id,d); if(f) DIG_B.push(f)});
+  if(!ALL_P.length||!PGRID) return;
+  const rawLookup=(x,y)=>(PGRID.get(Math.floor(x/GCS)+'_'+Math.floor(y/GCS))||[]).map(i=>ALL_P[i]);
+  // bangunan asli yang belum punya bidang → coba bidang hasil digitasi
+  ALL_B.forEach(b=>{b.properties._pidD=(DIG_P.length&&!b.properties._pid0)?voteJoin(b,()=>DIG_P):''});
+  // bangunan hasil digitasi → bidang asli, lalu bidang digitasi
+  DIG_B.forEach(b=>{b.properties._pid0=voteJoin(b,(x,y)=>rawLookup(x,y).concat(DIG_P))});
+}
 const REMOTE={bidang:new Map(),bangunan:new Map()};
 const FIELD_P={NIB:'NIB',tipe_hak:'tipe_hak',status:'status',zona:'zona',luas:'_luas'};
 const FIELD_B={NIB:'NIB',fungsi:'fungsi',luas_bangunan:'luas_bangunan',lantai:'lantai',tipe_hak:'tipe_hak',status:'status',luas_bidang:'luas_bidang'};
@@ -419,17 +488,17 @@ function applyRemoteAll(){
     q._del=!!o.deleted; q._by=o.updatedBy||''; q._at=o.updatedAt||0;
   });
   run(ALL_P,'bidang',FIELD_P); run(ALL_B,'bangunan',FIELD_B);
-  parcels=ALL_P.filter(f=>!f.properties._del); buildings=ALL_B.filter(f=>!f.properties._del);
+  parcels=ALL_P.concat(DIG_P).filter(f=>!f.properties._del); buildings=ALL_B.concat(DIG_B).filter(f=>!f.properties._del);
   pById=new Map(parcels.map(f=>[f.properties._id,f])); bById=new Map(buildings.map(f=>[f.properties._id,f]));
-  buildings.forEach(b=>{b.properties._pid=pById.has(b.properties._pid0)?b.properties._pid0:''});
+  buildings.forEach(b=>{const q=b.properties; q._pid=[q._pid0,q._pidD].find(x=>x&&pById.has(x))||''});
   refresh(); updateCloudUI();
 }
-function persistLocal(){store.set('overrides',{bidang:[...REMOTE.bidang],bangunan:[...REMOTE.bangunan]})}
+function persistLocal(){store.set('overrides',{bidang:[...REMOTE.bidang],bangunan:[...REMOTE.bangunan]});store.set('digit',{bidang:[...DIGIT.bidang],bangunan:[...DIGIT.bangunan]})}
 function cloudFail(e){msg('Gagal menyimpan ke Firestore: '+(e&&(e.code||e.message)||e)+'. Perubahan belum tersimpan di server.',0)}
 /* Rekaman LENGKAP sebuah objek (semua kolom), bukan hanya kolom yang diubah */
 const r2=v=>Math.round((+v||0)*100)/100;
 function fullRecord(kind,id){
-  const f=[...ALL_P,...ALL_B].find(x=>x.properties._id===id); if(!f) return null; const q=f.properties;
+  const f=[...ALL_P,...DIG_P,...ALL_B,...DIG_B].find(x=>x.properties._id===id); if(!f) return null; const q=f.properties;
   if(kind==='bidang') return {id:q._id,NIB:q.NIB,tipe_hak:q.tipe_hak,status:q.status,zona:q.zona,luas:r2(q._luas),deleted:!!q._del,
     n_bangunan:q._n||0,luas_tapak:r2(q._fp),luas_lantai:r2(q._fl),zona_pakai:q._z||'',kdb_aktual:r2(q._luas?q._fp/q._luas*100:0),klb_aktual:r2(q._luas?q._fl/q._luas:0),kepatuhan:q._ok||''};
   return {id:q._id,pid:q._pid0||'',NIB:q.NIB,fungsi:q.fungsi,height_m:q.height_m,tinggi:q._h,luas_bangunan:r2(q.luas_bangunan),luas_bidang:r2(q.luas_bidang),
@@ -443,12 +512,25 @@ function saveEntity(kind,id,patch){
     CLOUD.save(kind,id,rec).catch(cloudFail);
   } else persistLocal();
 }
+function saveDigit(kind,id,patch,isNew){
+  DIGIT[kind].set(id,Object.assign({},DIGIT[kind].get(id)||{},patch));
+  rebuildDigit(); applyRemoteAll();
+  const d=DIGIT[kind].get(id);
+  const rec=Object.assign({},fullRecord(kind,id)||{},{koordinat:d.koordinat}); delete rec.deleted;   // simpan SEMUA kolom + koordinat
+  DIGIT[kind].set(id,Object.assign({},d,rec));
+  if(CLOUD.configured) CLOUD.saveDigit(DIGIT_COL[kind],id,rec,!!isNew).catch(cloudFail); else persistLocal();
+}
+function removeDigit(kind,id){
+  DIGIT[kind].delete(id); rebuildDigit(); applyRemoteAll();
+  if(CLOUD.configured) CLOUD.removeDigit(DIGIT_COL[kind],id).catch(cloudFail); else persistLocal();
+}
 function resetEntity(kind,id){
   REMOTE[kind].delete(id);
   if(CLOUD.configured) CLOUD.remove(kind,id).catch(cloudFail); else persistLocal();
   applyRemoteAll();
 }
-if(!CLOUD.configured){ const ov=store.get('overrides',null); if(ov){REMOTE.bidang=new Map(ov.bidang);REMOTE.bangunan=new Map(ov.bangunan)} }
+if(!CLOUD.configured){ const ov=store.get('overrides',null); if(ov){REMOTE.bidang=new Map(ov.bidang);REMOTE.bangunan=new Map(ov.bangunan)}
+  const dg=store.get('digit',null); if(dg){DIGIT.bidang=new Map(dg.bidang);DIGIT.bangunan=new Map(dg.bangunan)} }
 
 /* ===== Jembatan ke modul Firebase (di bagian bawah file) ===== */
 window.APP={
@@ -457,6 +539,7 @@ window.APP={
   setUser(u){CLOUD.user=u;updateCloudUI();buildSettings();if(selected)render(selected)},
   cloudError(e){CLOUD.err=(e&&(e.code||e.message))||String(e);updateCloudUI();msg('Firestore: '+CLOUD.err,0)},
   setRemote(kind,docs){REMOTE[kind]=new Map(docs);applyRemoteAll()},
+  setDigit(kind,docs){DIGIT[kind]=new Map(docs);rebuildDigit();applyRemoteAll()},
   setConfig(c){
     if(c.zona) for(const k in c.zona) if(ZONA[k]) Object.assign(ZONA[k],c.zona[k]);
     if(c.tinggiLantai>0) S.tinggiLantai=c.tinggiLantai;
@@ -496,9 +579,10 @@ function start(){
     else if(er.status&&++tileErr===5) msg('Tile peta dasar gagal dimuat (koneksi/diblokir). Coba pilih peta dasar lain atau "Tanpa peta dasar".',0);
   });
   map.on('click',onClick);
+  map.on('mousemove',drawMove); map.on('dblclick',e=>{if(DRAW.active){e.preventDefault();drawFinish()}});
   ['bangunan-3d','bidang-fill'].forEach(l=>{
-    map.on('mouseenter',l,()=>map.getCanvas().style.cursor='pointer');
-    map.on('mouseleave',l,()=>map.getCanvas().style.cursor='');
+    map.on('mouseenter',l,()=>{if(!DRAW.active)map.getCanvas().style.cursor='pointer'});
+    map.on('mouseleave',l,()=>{if(!DRAW.active)map.getCanvas().style.cursor=''});
   });
   loadAll().then(afterLoad).catch(e=>{
     $('#loading').textContent='Data belum termuat';
@@ -524,7 +608,7 @@ function addLayers(){
     'fill-extrusion-color':colorExpr('bangunan'),'fill-extrusion-height':['get','_h'],'fill-extrusion-base':0,'fill-extrusion-opacity':0.92}});
   map.addLayer({id:'bangunan-sel',type:'fill-extrusion',source:'bangunan',filter:['==',['get','_id'],''],paint:{
     'fill-extrusion-color':'#00e5ff','fill-extrusion-height':['+',['get','_h'],0.4],'fill-extrusion-base':0,'fill-extrusion-opacity':1}});
-  applySelection(); addBatas(); applyVis();
+  applySelection(); addBatas(); applyVis(); addDrawLayers();
 }
 function addBatas(){
   if(!BATAS) return;
@@ -609,6 +693,7 @@ const badge=(ok,t1='Sesuai',t2='Melebihi')=>`<span class="badge ${ok?'ok':'bad'}
 const bar=(val,max,ok)=>`<div class="bar"><i style="width:${max?Math.min(val/max*100,100):0}%;background:${ok?'var(--ok)':'var(--bad)'}"></i></div>`;
 
 function onClick(e){
+  if(DRAW.active){drawClick(e);return}
   if(!map.getLayer('bangunan-3d')) return;
   const b=map.queryRenderedFeatures(e.point,{layers:['bangunan-3d']})[0];
   if(b){select('bangunan',b.properties._id);return}
@@ -629,7 +714,7 @@ function render(sel){
 }
 const actions=`<div class="actions"><button class="btn edit" data-a="edit">✏️ Edit</button><button class="btn del" data-a="del">🗑 Hapus</button><button class="btn" data-a="close">Tutup</button></div>`;
 
-const audit=q=>q._mod?kv('Diubah',esc(q._by||'lokal')+(q._at?'<br><small>'+new Date(q._at).toLocaleString('id-ID')+'</small>':'')):'';
+const audit=q=>(q._dig?kv('Sumber','Digitasi manual'):'')+(q._mod?kv(q._dig?'Dicatat oleh':'Diubah',esc(q._by||'lokal')+(q._at?'<br><small>'+new Date(q._at).toLocaleString('id-ID')+'</small>':'')):'');
 function htmlBangunan(f){
   const q=f.properties, p=pById.get(q._pid), pq=p&&p.properties;
   const luasBidang=pq?pq._luas:(q.luas_bidang||0);
@@ -688,6 +773,8 @@ function openEdit(sel){
   const isB=sel.kind==='bangunan', p=isB?pById.get(q._pid):f, pq=p&&p.properties;
   $('#mtitle').textContent=isB?'Edit Bangunan':'Edit Bidang Tanah';
   $('#g_fungsi').style.display=isB?'block':'none'; $('#g_lb').style.display=isB?'block':'none';
+  ['g_lbd','g_hs','g_zona'].forEach(i=>$('#'+i).style.display=''); $('#bDel').style.display='';
+  $('#g_tinggi').style.display=(isB&&q._dig)?'block':'none'; if(isB&&q._dig) $('#e_tinggi').value=q.height_m||'';
   $('#e_nib').value=q.NIB||'';
   $('#e_lb').value=isB?q.luas_bangunan:'';
   $('#e_lbd').value=pq?pq._luas:(q.luas_bidang||'');
@@ -698,9 +785,10 @@ function openEdit(sel){
   $('#bReset').style.display=REMOTE[sel.kind].has(sel.id)?'':'none';
   $('#modal').style.display='flex';
 }
-$('#bCancel').onclick=()=>$('#modal').style.display='none';
+$('#bCancel').onclick=()=>{$('#modal').style.display='none';drawClear()};
 $('#bSave').onclick=()=>{
   if(!gate()) return;
+  if(editing&&editing.isNew){saveNew();return}
   const sel=editing, f=(sel.kind==='bangunan'?bById:pById).get(sel.id); if(!f){$('#modal').style.display='none';return}
   const q=f.properties, isB=sel.kind==='bangunan', p=isB?pById.get(q._pid):f, pq=p&&p.properties;
   const hak=$('#e_hak').value, st=$('#e_status').value, zn=$('#e_zona').value, lbd=+$('#e_lbd').value, nib=$('#e_nib').value.trim();
@@ -708,10 +796,10 @@ $('#bSave').onclick=()=>{
     const pb={NIB:nib,fungsi:$('#e_fungsi').value,lantai:Math.max(0,parseInt($('#e_lantai').value)||0)};
     const lb=+$('#e_lb').value; if(lb>0) pb.luas_bangunan=lb;
     if(!pq){pb.tipe_hak=hak;pb.status=st;if(lbd>0)pb.luas_bidang=lbd}
-    saveEntity('bangunan',q._id,pb);
-    if(pq){const pp={tipe_hak:hak,status:st,zona:zn}; if(lbd>0) pp.luas=lbd; saveEntity('bidang',pq._id,pp)}
+    if(q._dig){const tt=+$('#e_tinggi').value; if(tt>0) pb.tinggi=tt; saveDigit('bangunan',q._id,pb)} else saveEntity('bangunan',q._id,pb);
+    if(pq){const pp={tipe_hak:hak,status:st,zona:zn}; if(lbd>0) pp.luas=lbd; pq._dig?saveDigit('bidang',pq._id,pp):saveEntity('bidang',pq._id,pp)}
   }else{
-    const pp={NIB:nib,tipe_hak:hak,status:st,zona:zn}; if(lbd>0) pp.luas=lbd; saveEntity('bidang',q._id,pp);
+    const pp={NIB:nib,tipe_hak:hak,status:st,zona:zn}; if(lbd>0) pp.luas=lbd; q._dig?saveDigit('bidang',q._id,pp):saveEntity('bidang',q._id,pp);
   }
   $('#modal').style.display='none';
 };
@@ -719,8 +807,11 @@ $('#bDel').onclick=()=>{ $('#modal').style.display='none'; doDelete(editing); };
 $('#bReset').onclick=()=>{ if(!gate()) return; if(confirm('Kembalikan objek ini ke data asli?')){resetEntity(editing.kind,editing.id);$('#modal').style.display='none'} };
 function doDelete(sel){
   if(!gate()) return;
-  if(!confirm('Hapus objek ini dari peta'+(CLOUD.configured?' (untuk semua pengguna)':'')+'? Data asli bisa dikembalikan lewat tombol "↩ Asli".')) return;
-  saveEntity(sel.kind,sel.id,{deleted:true}); closeInfo();
+  const f=(sel.kind==='bangunan'?bById:pById).get(sel.id), dig=!!(f&&f.properties._dig);
+  if(!confirm(dig?'Hapus objek hasil digitasi ini secara permanen'+(CLOUD.configured?' (untuk semua pengguna)':'')+'?'
+                  :'Hapus objek ini dari peta'+(CLOUD.configured?' (untuk semua pengguna)':'')+'? Data asli bisa dikembalikan lewat tombol "↩ Asli".')) return;
+  if(dig) removeDigit(sel.kind,sel.id); else saveEntity(sel.kind,sel.id,{deleted:true});
+  closeInfo();
 }
 function download(name,arr,kind){
   const out=arr.map(f=>{const q=f.properties,o={};
@@ -731,6 +822,107 @@ function download(name,arr,kind){
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(fc(out))],{type:'application/geo+json'}));a.download=name;a.click();
 }
 $('#btnExp').onclick=()=>{download('bidang_edit.geojson',parcels,'bidang');setTimeout(()=>download('bangunan_edit.geojson',buildings,'bangunan'),400)};
+
+/* ================= DIGITASI MANUAL ================= */
+const DRAW={active:false,kind:'',pts:[],cursor:null};
+function drawFC(){
+  const p=DRAW.pts, c=(DRAW.active&&DRAW.cursor&&p.length)?DRAW.cursor:null, line=c?[...p,c]:[...p], f=[];
+  if(line.length>=3) f.push({type:'Feature',properties:{},geometry:{type:'Polygon',coordinates:[[...line,line[0]]]}});
+  if(line.length>=2) f.push({type:'Feature',properties:{},geometry:{type:'LineString',coordinates:line.length>=3?[...line,line[0]]:line}});
+  p.forEach(x=>f.push({type:'Feature',properties:{},geometry:{type:'Point',coordinates:x}}));
+  return fc(f);
+}
+function addDrawLayers(){
+  if(!map.getSource('draw')) map.addSource('draw',{type:'geojson',data:drawFC()});
+  if(map.getLayer('draw-fill')) return;
+  map.addLayer({id:'draw-fill',type:'fill',source:'draw',filter:['==',['geometry-type'],'Polygon'],paint:{'fill-color':'#00e5ff','fill-opacity':0.25}});
+  map.addLayer({id:'draw-line',type:'line',source:'draw',filter:['==',['geometry-type'],'LineString'],paint:{'line-color':'#00e5ff','line-width':2.5}});
+  map.addLayer({id:'draw-pts',type:'circle',source:'draw',filter:['==',['geometry-type'],'Point'],paint:{'circle-radius':5,'circle-color':'#ffffff','circle-stroke-color':'#00e5ff','circle-stroke-width':2}});
+}
+function updateDraw(){const s=map&&map.getSource('draw'); if(s) s.setData(drawFC())}
+function drawText(){
+  const n=DRAW.pts.length, nm=DRAW.kind==='bidang'?'BIDANG TANAH':'BANGUNAN';
+  let a=''; if(n>=3){a=' · luas ≈ '+fmt(geomArea({type:'Polygon',coordinates:[[...DRAW.pts,DRAW.pts[0]]]}))+' m²'}
+  $('#drawtxt').textContent='Menggambar '+nm+' — '+n+' titik'+a+(n<3?' (klik peta untuk menambah titik)':'');
+}
+function snap(e){
+  if(!$('#snapOn').checked) return null;
+  const r=10, ls=['bidang-fill','bangunan-3d'].filter(l=>map.getLayer(l)); let best=null,bd=r;
+  if(DRAW.pts.length>=3){const s=map.project(DRAW.pts[0]), d=Math.hypot(s.x-e.point.x,s.y-e.point.y); if(d<bd){bd=d;best=DRAW.pts[0]}}
+  const hits=ls.length?map.queryRenderedFeatures([[e.point.x-r,e.point.y-r],[e.point.x+r,e.point.y+r]],{layers:ls}):[];
+  for(const f of hits){
+    const walk=c=>{ if(typeof c[0]==='number'){const s=map.project(c), d=Math.hypot(s.x-e.point.x,s.y-e.point.y); if(d<bd){bd=d;best=[c[0],c[1]]}} else c.forEach(walk) };
+    walk(f.geometry.coordinates);
+  }
+  return best;
+}
+function selfIntersects(p){
+  const n=p.length, ccw=(a,b,c)=>(c[1]-a[1])*(b[0]-a[0])>(b[1]-a[1])*(c[0]-a[0]), X=(a,b,c,d)=>ccw(a,c,d)!==ccw(b,c,d)&&ccw(a,b,c)!==ccw(a,b,d);
+  for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){ if(j-i<=1||(i===0&&j===n-1)) continue; if(X(p[i],p[(i+1)%n],p[j],p[(j+1)%n])) return true }
+  return false;
+}
+function drawStart(kind){
+  if(!map||!ALL_P.length){msg('Data belum termuat.',4000);return}
+  if(!gate()) return;
+  if(DRAW.active) drawCleanup();
+  closeInfo();
+  Object.assign(DRAW,{active:true,kind,pts:[],cursor:null});
+  map.doubleClickZoom.disable(); map.getCanvas().style.cursor='crosshair'; map.easeTo({pitch:0,bearing:0,duration:400});
+  $('#drawbar').style.display='flex'; if(innerWidth<=820) $('#left').classList.add('hide');
+  drawText(); updateDraw();
+}
+function drawCleanup(){
+  DRAW.active=false; if(map){map.doubleClickZoom.enable(); map.getCanvas().style.cursor=''; map.easeTo({pitch:is3d?60:0,duration:400})}
+  $('#drawbar').style.display='none';
+}
+function drawClear(){DRAW.pts=[];DRAW.cursor=null;updateDraw()}
+function drawCancel(){ if(!DRAW.active) return; drawCleanup(); drawClear() }
+function drawUndo(){ if(!DRAW.active||!DRAW.pts.length) return; DRAW.pts.pop(); drawText(); updateDraw() }
+function drawMove(e){ if(!DRAW.active) return; DRAW.cursor=snap(e)||[e.lngLat.lng,e.lngLat.lat]; updateDraw() }
+function drawClick(e){
+  const pt=snap(e)||[e.lngLat.lng,e.lngLat.lat];
+  if(DRAW.pts.length>=3&&pt===DRAW.pts[0]){drawFinish();return}            // klik titik pertama = selesai
+  const last=DRAW.pts[DRAW.pts.length-1];
+  if(last){const a=map.project(last); if(Math.hypot(a.x-e.point.x,a.y-e.point.y)<4) return}  // abaikan klik ganda di titik sama
+  DRAW.pts.push(pt); drawText(); updateDraw();
+}
+function drawFinish(){
+  if(!DRAW.active) return; const p=DRAW.pts;
+  if(p.length<3){msg('Minimal 3 titik untuk membentuk poligon.',4000);return}
+  if(selfIntersects(p)){msg('Poligon berpotongan sendiri. Urungkan titik terakhir atau gambar ulang.',5000);return}
+  const geom={type:'Polygon',coordinates:[[...p,p[0]]]};
+  if(geomArea(geom)<1){msg('Luas poligon terlalu kecil (< 1 m²).',4000);return}
+  const kind=DRAW.kind; drawCleanup(); DRAW.cursor=null; updateDraw(); openNew(kind,geom);
+}
+function openNew(kind,geom){
+  const isB=kind==='bangunan', area=Math.round(geomArea(geom)*100)/100;
+  editing={kind,isNew:true,geom,id:(isB?'dgb_':'dgp_')+Date.now().toString(36)+Math.random().toString(36).slice(2,5)};
+  $('#mtitle').textContent=isB?'Bangunan Baru (Digitasi)':'Bidang Tanah Baru (Digitasi)';
+  $('#g_fungsi').style.display=isB?'block':'none'; $('#g_lb').style.display=isB?'block':'none'; $('#g_tinggi').style.display=isB?'block':'none';
+  $('#g_lbd').style.display=isB?'none':''; $('#g_hs').style.display=isB?'none':''; $('#g_zona').style.display=isB?'none':'';
+  $('#e_nib').value=''; $('#e_lb').value=isB?area:''; $('#e_lbd').value=isB?'':area;
+  $('#e_fungsi').value='Permukiman'; $('#e_lantai').value=''; $('#e_tinggi').value='';
+  $('#e_hak').value=''; $('#e_status').value=''; zonaOptions($('#e_zona'),true); $('#e_zona').value='';
+  $('#bDel').style.display='none'; $('#bReset').style.display='none';
+  $('#modal').style.display='flex';
+}
+function saveNew(){
+  const e=editing, kind=e.kind, id=e.id, koordinat=flatCoords(e.geom), area=Math.round(geomArea(e.geom)*100)/100, nib=$('#e_nib').value.trim();
+  let patch;
+  if(kind==='bidang'){ const l=+$('#e_lbd').value;
+    patch={koordinat,NIB:nib,tipe_hak:$('#e_hak').value,status:$('#e_status').value,zona:$('#e_zona').value,luas:l>0?l:area};
+  }else{ const lb=+$('#e_lb').value, lt=Math.max(0,parseInt($('#e_lantai').value)||0), th=+$('#e_tinggi').value;
+    patch={koordinat,NIB:nib,fungsi:$('#e_fungsi').value,luas_bangunan:lb>0?lb:area,lantai:lt,tinggi:th>0?th:(lt>0?lt*S.tinggiLantai:0)};
+  }
+  saveDigit(kind,id,patch,true);
+  $('#modal').style.display='none'; drawClear(); editing=null; select(kind,id);
+}
+document.addEventListener('keydown',e=>{
+  if(!DRAW.active) return; const tg=(e.target.tagName||'').toLowerCase(); if(tg==='input'||tg==='select'||tg==='textarea') return;
+  if(e.key==='Enter') drawFinish(); else if(e.key==='Escape') drawCancel(); else if(e.key==='Backspace'){e.preventDefault();drawUndo()}
+});
+$('#btnDrawP').onclick=()=>drawStart('bidang'); $('#btnDrawB').onclick=()=>drawStart('bangunan');
+$('#dUndo').onclick=drawUndo; $('#dDone').onclick=drawFinish; $('#dCancel').onclick=drawCancel;
 
 /* ================= PENGATURAN ================= */
 function buildSettings(){
@@ -787,13 +979,17 @@ if(cfg.apiKey){
     let db; try{db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})})}catch(e){db=F.getFirestore(app)}
     const auth=Au.getAuth(app);
     const who=()=>auth.currentUser?'anonim-'+auth.currentUser.uid.slice(0,5):'';
-    const conv=s=>s.docs.map(d=>{const x=d.data();return [d.id,{...x,updatedAt:x.updatedAt&&x.updatedAt.toMillis?x.updatedAt.toMillis():0}]});
+    const ms=v=>v&&v.toMillis?v.toMillis():0;
+    const conv=s=>s.docs.map(d=>{const x=d.data();return [d.id,{...x,updatedAt:ms(x.updatedAt),createdAt:ms(x.createdAt)}]});
     const C=window.__CLOUD__={};
     // Dipasang ke objek CLOUD milik aplikasi lewat APP (lihat di bawah)
     const API={
       save:(kind,id,patch)=>F.setDoc(F.doc(db,kind,id),{...patch,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true}),
       remove:(kind,id)=>F.deleteDoc(F.doc(db,kind,id)),
-      saveConfig:c=>F.setDoc(F.doc(db,'config','parameter'),{...c,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true})
+      saveConfig:c=>F.setDoc(F.doc(db,'config','parameter'),{...c,updatedBy:who(),updatedAt:F.serverTimestamp()},{merge:true}),
+      // digitasi: dokumen baru memuat createdBy/createdAt; semua kolom + koordinat ditulis penuh
+      saveDigit:(col,id,rec,isNew)=>F.setDoc(F.doc(db,col,id),{...rec,updatedBy:who(),updatedAt:F.serverTimestamp(),...(isNew?{createdBy:who(),createdAt:F.serverTimestamp()}:{})},{merge:true}),
+      removeDigit:(col,id)=>F.deleteDoc(F.doc(db,col,id))
     };
     window.APP.attach(API);
     Au.onAuthStateChanged(auth,u=>window.APP.setUser(u?{email:'anonim-'+u.uid.slice(0,5),uid:u.uid}:null));
@@ -801,6 +997,8 @@ if(cfg.apiKey){
     const err=e=>window.APP.cloudError(e);
     F.onSnapshot(F.collection(db,'bidang'),s=>window.APP.setRemote('bidang',conv(s)),err);
     F.onSnapshot(F.collection(db,'bangunan'),s=>window.APP.setRemote('bangunan',conv(s)),err);
+    F.onSnapshot(F.collection(db,'bidang_digit'),s=>window.APP.setDigit('bidang',conv(s)),err);
+    F.onSnapshot(F.collection(db,'bangunan_digit'),s=>window.APP.setDigit('bangunan',conv(s)),err);
     F.onSnapshot(F.doc(db,'config','parameter'),s=>{if(s.exists())window.APP.setConfig(s.data())},err);
     window.APP.setReady(true);
   }catch(e){ console.error(e); window.APP.cloudError(e); }
