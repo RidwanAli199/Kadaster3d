@@ -940,7 +940,7 @@ $('#dUndo').onclick=drawUndo; $('#dDone').onclick=drawFinish; $('#dCancel').oncl
 /* Disimpan di Firestore (koleksi aoi_layers) sebagai satu dokumen per layer; geometri berupa string JSON (Firestore tidak
    mengizinkan array bersarang). File > ~900 KB tidak muat di 1 dokumen → hanya aktif di sesi ini. Hide/unhide bersifat
    per-pengguna (disimpan di browser), tidak ditulis ke Firestore. */
-const AOI_MAX=900000, AOI_COLORS=['#ff9f1c','#e83e8c','#7c4dff','#2ec4b6','#ffd60a','#ff5d5d'];
+const AOI_MAX=900000, AOI_COLORS=['#39ff14','#00ff41','#00ffa3','#7dff00'];
 const AOI_CLOUD=new Map(), AOI_LOCAL=new Map(), AOI_DRAWN=new Map();
 let AOI_HIDE=store.get('aoiHide',{})||{};
 const aoiAll=()=>[...AOI_CLOUD.values(),...AOI_LOCAL.values()];
