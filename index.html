@@ -153,6 +153,8 @@ window.APP_CFG = { firebase: {
         <div class="drawbtns"><button class="btn edit" id="btnDrawP">＋ Bidang tanah (2D)</button><button class="btn edit" id="btnDrawB">＋ Bangunan (3D)</button></div>
         <button class="btn edit" id="btnAoi" style="width:100%;margin-top:8px" title="Impor file GeoJSON sebagai AOI (layer referensi digitasi)">⬆ Impor AOI (GeoJSON)</button>
         <input type="file" id="aoiIn" accept=".geojson,.json" multiple style="display:none">
+        <button class="btn edit" id="btnBidangImp" style="width:100%;margin-top:8px" title="Impor atribut &amp; bidang dari GeoJSON (cocok berdasarkan properti id); data lama ditimpa">⬆ Impor Bidang Tanah (GeoJSON)</button>
+        <input type="file" id="bidangIn" accept=".geojson,.json" multiple style="display:none">
         <p class="src" style="margin:6px 0 0">AOI tampil sebagai layer referensi (tidak ikut perhitungan KDB/KLB). Sembunyikan atau hapus di panel Layer.</p>
         <label class="chk"><input type="checkbox" id="snapOn" checked> Snap ke titik terdekat (bidang/bangunan)</label>
         <p class="src" style="margin-top:8px">Klik untuk menambah titik · klik titik pertama / dobel-klik / Enter = selesai · Backspace = urungkan · Esc = batal.</p>
@@ -1059,6 +1061,64 @@ if(!CLOUD.configured){
   (store.get('aoi',[])||[]).forEach(d=>{ try{ const f=JSON.parse(d.raw); if(f&&Array.isArray(f.features)) AOI_LOCAL.set(d.id,{id:d.id,src:'local',mem:false,name:d.name||'AOI',warna:aoiColor(d.warna),n:f.features.length,fc:f,raw:d.raw}) }catch(e){} });
 }
 aoiRenderList();
+
+/* ================= IMPOR BIDANG TANAH (GeoJSON) =================
+   Dicocokkan lewat properti "id": bdg_* = bidang data asli (atribut ditimpa), dgp_* = bidang hasil digitasi
+   (dibuat baru bila belum ada, atau ditimpa bila sudah ada). Data yang sudah ada dibaca lebih dulu untuk
+   dibandingkan; hanya yang berbeda yang ditulis ulang. Properti status_validasi_nib tidak disimpan. */
+async function importBidang(files){
+  if(!ALL_P.length){msg('Data belum termuat.',4000);return}
+  if(!gate()) return;
+  const allById=new Map(ALL_P.map(f=>[f.properties._id,f]));
+  for(const file of files){
+    let gj; try{gj=JSON.parse(await file.text())}catch(e){msg('“'+file.name+'” bukan file GeoJSON yang valid.',6000);continue}
+    const feats=((gj&&gj.features)||[]).filter(x=>x&&x.properties&&x.properties.id);
+    if(!feats.length){msg('“'+file.name+'”: tidak ada fitur dengan properti id.',6000);continue}
+    const upd=[]; let skip=0, same=0, nNew=0;
+    feats.forEach(x=>{
+      const o=x.properties, id=String(o.id), zn=txt(o.zona);
+      const p={NIB:txt(o.NIB),tipe_hak:txt(o.tipe_hak),status:txt(o.status),zona:ZONA[zn]?zn:''};
+      if(num(o.luas)>0) p.luas=num(o.luas);
+      const diffAttr=q=>!q||['NIB','tipe_hak','status','zona'].some(k=>(q[k]||'')!==p[k])||(p.luas&&Math.abs((q._luas||0)-p.luas)>0.005);
+      if(allById.has(id)){
+        if(diffAttr(allById.get(id).properties)) upd.push({id,p,dig:false}); else same++;
+      }else if(id.startsWith('dgp_')&&x.geometry&&x.geometry.type==='Polygon'&&x.geometry.coordinates[0]&&x.geometry.coordinates[0].length>=4){
+        p.koordinat=flatCoords(x.geometry);
+        const old=DIGIT.bidang.get(id), cur=pById.get(id);
+        if(!old){upd.push({id,p,dig:true,isNew:true});nNew++}
+        else if(diffAttr(cur&&cur.properties)||JSON.stringify(old.koordinat)!==JSON.stringify(p.koordinat)) upd.push({id,p,dig:true,isNew:false});
+        else same++;
+      }else skip++;
+    });
+    if(!upd.length){msg('“'+file.name+'”: tidak ada perubahan ('+same+' bidang sudah sama'+(skip?', '+skip+' dilewati karena id tidak dikenali':'')+').',8000);continue}
+    if(!confirm('Impor “'+file.name+'”:\n• '+(upd.length-nNew)+' bidang yang sudah ada akan DITIMPA\n• '+nNew+' bidang digitasi baru akan dibuat\n• '+same+' sudah sama (tidak diubah)\n• '+skip+' dilewati (id tidak dikenali)\n\nLanjutkan?')) continue;
+    upd.forEach(u=>{
+      if(u.dig) DIGIT.bidang.set(u.id,Object.assign({},DIGIT.bidang.get(u.id)||{},u.p));
+      else REMOTE.bidang.set(u.id,Object.assign({},REMOTE.bidang.get(u.id)||{},u.p));
+    });
+    rebuildDigit(); applyRemoteAll();            // hitung ulang sekali saja
+    const jobs=[];
+    upd.forEach(u=>{
+      const rec=fullRecord('bidang',u.id)||u.p;
+      if(u.dig){
+        const d=DIGIT.bidang.get(u.id), r=Object.assign({},rec,{koordinat:d.koordinat}); delete r.deleted;
+        DIGIT.bidang.set(u.id,Object.assign({},d,r));
+        jobs.push(()=>CLOUD.saveDigit(DIGIT_COL.bidang,u.id,r,u.isNew));
+      }else jobs.push(()=>CLOUD.save('bidang',u.id,rec));
+    });
+    if(CLOUD.configured){
+      try{
+        for(let i=0;i<jobs.length;i+=25){
+          msg('Menyimpan ke Firestore… '+Math.min(i+25,jobs.length)+' / '+jobs.length,0);
+          await Promise.all(jobs.slice(i,i+25).map(j=>j()));
+        }
+      }catch(e){cloudFail(e);return}
+    }else persistLocal();
+    msg('Impor selesai: '+(upd.length-nNew)+' bidang ditimpa, '+nNew+' bidang digitasi baru'+(skip?', '+skip+' dilewati':'')+'.',10000);
+  }
+}
+$('#btnBidangImp').onclick=()=>$('#bidangIn').click();
+$('#bidangIn').onchange=async e=>{ await importBidang([...e.target.files]); e.target.value='' };
 
 /* ================= PENGATURAN ================= */
 function buildSettings(){
