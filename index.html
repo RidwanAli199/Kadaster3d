@@ -306,8 +306,16 @@ const bm=()=>BASEMAPS[S.basemap];
 const DATA={
   bangunan:['data/1_Bangunan_3D_Update (5).geojson','data/export_lod1_dengan_tinggi.geojson','data/bangunan.geojson'],
   bidang:  ['data/2_Bidang_Tanah_Update (4).geojson','data/bidang_tanah.geojson','data/bidang.geojson'],
-  batas:   ['data/shp_sukarame.geojson','data/shp_sukarame.json','data/batas_kecamatan.geojson','data/batas.geojson']
+  batas:   ['data/shp_sukarame.geojson','data/shp_sukarame.json','data/batas_kecamatan.geojson','data/batas.geojson'],
+  // Persil format luar (id UUID, nib, tipehak, luas…) – SEMUA file yang ada di daftar ini dimuat sebagai bidang tanah.
+  // Tambahkan nama file baru di sini bila punya lebih dari satu.
+  persil:  ['data/persil-100-bidang.geojson']      // daftar manual (opsional) – file baru di bawah ini TIDAK perlu didaftarkan
 };
+// Persil otomatis: semua file .geojson/.json yang namanya memuat "persil" di folder data/ (dan semua file di data/persil/)
+// ditemukan lewat daftar file GitHub, jadi file baru cukup diunggah ke repo tanpa mengubah index.html.
+const GH_REPO='';            // 'pemilik/nama-repo' – isi SEKALI saja bila situs BUKAN github.io (mis. Vercel). Di github.io terdeteksi otomatis.
+const GH_BRANCH='';          // kosong = cabang utama repo
+const PERSIL_DIRS=['data','data/persil'];
 let BATAS=null;
 function utmInv(x,y){               // UTM 48S → WGS84 (untuk file batas yang belum direproyeksi)
   const a=6378137,f=1/298.257223563,k0=0.9996,e2=f*(2-f),ep2=e2/(1-e2),e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2));
@@ -335,12 +343,64 @@ async function fetchFirst(list,wajib=true){
   if(wajib) throw new Error('File tidak ditemukan di folder data/: '+list[0]);
   return null;
 }
+/* Temukan file persil otomatis lewat GitHub Contents API (repo publik). Gagal/limit → pakai daftar manual DATA.persil. */
+function ghRepo(){
+  if(GH_REPO) return GH_REPO;
+  const h=location.hostname; if(!/\.github\.io$/i.test(h)) return '';
+  const owner=h.split('.')[0], seg=location.pathname.split('/')[1];
+  return owner+'/'+(seg&&!/\.(html?)$/i.test(seg)?seg:owner+'.github.io');
+}
+async function listPersil(){
+  const found=new Set(DATA.persil), repo=ghRepo();
+  if(repo){
+    let list=null;
+    const ck=store.get('persilList',null);
+    if(ck&&ck.repo===repo&&Date.now()-ck.t<60000) list=ck.list;                        // cache 1 menit (batas API GitHub 60 permintaan/jam/IP)
+    if(!list){
+      list=[];
+      try{
+        for(const dir of PERSIL_DIRS){
+          const r=await fetch('https://api.github.com/repos/'+repo+'/contents/'+dir+(GH_BRANCH?'?ref='+encodeURIComponent(GH_BRANCH):''),{headers:{Accept:'application/vnd.github+json'}});
+          if(r.status===404) continue; if(!r.ok) throw new Error('GitHub API '+r.status);
+          (await r.json()).forEach(f=>{ if(f.type==='file'&&/\.(geo)?json$/i.test(f.name)&&(dir!=='data'||/persil/i.test(f.name))) list.push(dir+'/'+f.name) });
+        }
+        store.set('persilList',{t:Date.now(),repo,list});
+      }catch(e){ console.warn('Daftar file persil otomatis gagal ('+e.message+'); memakai daftar manual / cache.'); list=(ck&&ck.repo===repo?ck.list:[]) }
+    }
+    list.sort().forEach(u=>found.add(u));
+  }
+  return [...found];
+}
 async function loadAll(){
   const step=s=>{const l=$('#loading'); if(l) l.textContent=s};
   step('Memuat data bangunan…'); const b=await fetchFirst(DATA.bangunan);
   step('Memuat data bidang tanah…'); const p=await fetchFirst(DATA.bidang);
   step('Memuat batas wilayah…'); const bt=await fetchFirst(DATA.batas,false);
-  return {b:b.json,p:p.json,batas:bt&&bt.json};
+  step('Memuat persil…');
+  const persil=(await Promise.all((await listPersil()).map(u=>fetchFirst([u],false)))).filter(Boolean).map(r=>r.json);
+  return {b:b.json,p:p.json,batas:bt&&bt.json,persil};
+}
+
+/* ===== Persil dari file (folder data/): dibaca langsung, tanpa impor & tanpa tulis ke Firestore ===== */
+const FILE_BASES=new Set();      // kunci persil yang berasal dari file → duplikat hasil impor lama (dgp_) otomatis disembunyikan
+function persilLoad(gj,seen){
+  const src=gj&&gj.type==='FeatureCollection'?(gj.features||[]):(gj&&gj.type==='Feature'?[gj]:[]);
+  const toLL=c=>Math.abs(c[0])>180||Math.abs(c[1])>90?utmInv(c[0],c[1]):[c[0],c[1]];          // koordinat meter (UTM 48S) → lon/lat
+  const mp=c=>typeof c[0]==='number'?toLL(c):c.map(mp), out=[];
+  src.forEach(x=>{
+    if(!x||!x.geometry||!x.properties) return; const g=x.geometry;
+    if(g.type!=='Polygon'&&g.type!=='MultiPolygon') return;
+    const o=x.properties, geom={type:g.type,coordinates:mp(g.coordinates)};
+    const nib=txt(o.nib!=null?o.nib:(o.NIB!=null?o.NIB:'')), id0=o.id!=null?String(o.id):'';
+    const a=g.type==='Polygon'?geom.coordinates[0][0]:geom.coordinates[0][0][0];
+    const base=(id0?id0:((nib||'p')+'_'+Math.abs(Math.round(a[0]*1e5))+'_'+Math.abs(Math.round(a[1]*1e5)))).replace(/[^A-Za-z0-9_-]/g,'_').slice(0,70);
+    let id='psl_'+base, n=1; while(seen.has(id)) id='psl_'+base+'_'+(++n); seen.add(id); FILE_BASES.add(base);
+    const luas=num(o.luas)>0?num(o.luas):(num(o.luashitung)>0?num(o.luashitung):0);
+    out.push({type:'Feature',geometry:geom,properties:{_id:id,NIB:nib,
+      tipe_hak:mapHak(o.tipehak!=null?o.tipehak:(o.tipe_hak!=null?o.tipe_hak:o.TIPE_HAK)),status:txt(o.status!=null?o.status:o.STATUS),zona:'',luas_bidang:0,
+      _luas:luas>0?luas:Math.round(geomArea(geom)*100)/100}});
+  });
+  return out;
 }
 
 /* ===== Pemrosesan di browser: luas metrik (UTM 48S) + spatial join bangunan→bidang ===== */
@@ -368,7 +428,7 @@ function pipPoly(x,y,p){if(!pipRing(x,y,p[0]))return false;for(let k=1;k<p.lengt
 const pip=(x,y,g)=>g.type==='Polygon'?pipPoly(x,y,g.coordinates):g.coordinates.some(p=>pipPoly(x,y,p));
 function bboxOf(g){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;const w=c=>typeof c[0]==='number'?(x0=Math.min(x0,c[0]),x1=Math.max(x1,c[0]),y0=Math.min(y0,c[1]),y1=Math.max(y1,c[1])):c.forEach(w);w(g.coordinates);return [x0,y0,x1,y1]}
 
-function prepareRaw(bRaw,pRaw){
+function prepareRaw(bRaw,pRaw,persilFiles){
   const isPoly=g=>g&&(g.type==='Polygon'||g.type==='MultiPolygon');
   ALL_P=pRaw.features.filter(f=>isPoly(f.geometry)).map((f,i)=>{
     const o=f.properties||{}, la=num(o.luas_bidang);
@@ -376,6 +436,10 @@ function prepareRaw(bRaw,pRaw){
       tipe_hak:txt(o.tipe_hak!=null?o.tipe_hak:o.TIPE_HAK),status:txt(o.STATUS!=null?o.STATUS:o.status),zona:'',luas_bidang:0,
       _luas:la>0?la:Math.round(geomArea(f.geometry)*100)/100}};
   });
+  FILE_BASES.clear();                                              // persil dari file ditambahkan setelah bidang utama (id bidang utama tidak bergeser)
+  { const idx=new Map();                       // id persil → posisi; persil yang sama muncul lagi di file berikutnya = diperbarui, bukan digandakan
+    (persilFiles||[]).forEach(j=>persilLoad(j,new Set()).forEach(f=>{ const k=f.properties._id; if(idx.has(k)) ALL_P[idx.get(k)]=f; else{idx.set(k,ALL_P.length);ALL_P.push(f)} }));
+    const nPsl=ALL_P.filter(f=>f.properties._id.startsWith('psl_')).length; if(nPsl) console.info('Persil dari file:',nPsl,'bidang'); }
   ALL_B=bRaw.features.filter(f=>isPoly(f.geometry)&&(f.properties||{}).highway==null).map((f,i)=>{
     const o=f.properties||{}, h=num(o.height_m), lb=num(o.luas_bangunan);
     return {type:'Feature',geometry:f.geometry,properties:{_id:'bgn_'+i,_pid0:'',NIB:txt(o.NIB),fungsi:txt(o.fungsi),height_m:h,_h:h>0?h:T_DEF,
@@ -415,7 +479,7 @@ function prepareRaw(bRaw,pRaw){
 function afterLoad(R){
   BATAS=normalizeBatas(R.batas);
   if(!BATAS) msg('Batas wilayah tidak termuat: file data/shp_sukarame.geojson tidak ditemukan atau kosong. Layer lain tetap tampil.',12000);
-  const t0=performance.now(); prepareRaw(R.b,R.p); console.log('Proses data di browser:',Math.round(performance.now()-t0),'ms');
+  const t0=performance.now(); prepareRaw(R.b,R.p,R.persil); console.log('Proses data di browser:',Math.round(performance.now()-t0),'ms');
   const l=$('#loading'); if(l) l.remove();
   const go=()=>{ addLayers(); addBatas(); fitData(); };
   try{ go(); }catch(e){ map.once('style.load',go); }
@@ -425,7 +489,7 @@ $('#fileIn').onchange=async e=>{
   const R={};
   for(const f of e.target.files){
     const n=f.name.toLowerCase(), j=JSON.parse(await f.text());
-    if(/bangunan|lod1|building/.test(n)) R.b=j; else if(/bidang|tanah|parcel/.test(n)) R.p=j; else if(/sukarame|batas|kecamatan/.test(n)) R.batas=j;
+    if(/persil/.test(n)) (R.persil=R.persil||[]).push(j); else if(/bangunan|lod1|building/.test(n)) R.b=j; else if(/bidang|tanah|parcel/.test(n)) R.p=j; else if(/sukarame|batas|kecamatan/.test(n)) R.batas=j;
   }
   if(!R.b||!R.p){msg('Pilih sekaligus file bangunan dan file bidang tanah (nama file memuat kata "bangunan" dan "bidang").');return}
   afterLoad(R);
@@ -474,7 +538,7 @@ function voteJoin(b,lookup){          // bidang dengan titik-sampel bangunan ter
 }
 function rebuildDigit(){
   DIG_P=[];DIG_B=[];
-  DIGIT.bidang.forEach((d,id)=>{const f=mkDigit('bidang',id,d); if(f) DIG_P.push(f)});
+  DIGIT.bidang.forEach((d,id)=>{ if(id.startsWith('dgp_')&&FILE_BASES.has(id.slice(4))) return; const f=mkDigit('bidang',id,d); if(f) DIG_P.push(f)});
   DIGIT.bangunan.forEach((d,id)=>{const f=mkDigit('bangunan',id,d); if(f) DIG_B.push(f)});
   if(!ALL_P.length||!PGRID) return;
   const rawLookup=(x,y)=>(PGRID.get(Math.floor(x/GCS)+'_'+Math.floor(y/GCS))||[]).map(i=>ALL_P[i]);
