@@ -1066,20 +1066,56 @@ aoiRenderList();
    Dicocokkan lewat properti "id": bdg_* = bidang data asli (atribut ditimpa), dgp_* = bidang hasil digitasi
    (dibuat baru bila belum ada, atau ditimpa bila sudah ada). Data yang sudah ada dibaca lebih dulu untuk
    dibandingkan; hanya yang berbeda yang ditulis ulang. Properti status_validasi_nib tidak disimpan. */
+/* Konversi GeoJSON persil format luar (mis. ekspor BPN/Bhumi: id UUID, nib, tipehak, luas) → fitur berformat aplikasi.
+   id dibentuk deterministik "dgp_<id sumber>" sehingga impor ulang MEMPERBARUI bidang yang sama, bukan menggandakan. */
+const HAK_MAP={'hak milik':'SHM','shm':'SHM','hak guna bangunan':'HGB','hgb':'HGB','hak pakai':'Hak Pakai','girik':'Girik','tanah negara':'Tanah Negara','kosong':'','-':''};
+const mapHak=v=>{const k=txt(v).toLowerCase(); return Object.prototype.hasOwnProperty.call(HAK_MAP,k)?HAK_MAP[k]:txt(v)};
+function persilConvert(gj){
+  const out={feats:[],skipped:0,ext:0,notes:[]}; let holes=0,parts=0,big=0,noGeom=0;
+  const toLL=c=>Math.abs(c[0])>180||Math.abs(c[1])>90?utmInv(c[0],c[1]):[c[0],c[1]];        // koordinat meter (UTM 48S) → lon/lat
+  const src=gj&&gj.type==='FeatureCollection'?(gj.features||[]):(gj&&gj.type==='Feature'?[gj]:[]);
+  src.forEach(x=>{
+    if(!x||!x.properties) return;
+    const o=x.properties, id0=o.id!=null?String(o.id):'';
+    if(/^(bdg_|dgp_)/.test(id0)){ out.feats.push(x); return }                                   // format aplikasi: apa adanya
+    const g=x.geometry; if(!g||(g.type!=='Polygon'&&g.type!=='MultiPolygon')){noGeom++;return}
+    const polys=g.type==='Polygon'?[g.coordinates]:g.coordinates;
+    polys.forEach((poly,k)=>{
+      if(!poly||!poly[0]||poly[0].length<4){noGeom++;return}
+      if(poly[0].length>990){big++;return}                                                      // batas Rules: maks 1000 titik
+      if(poly.length>1) holes++;
+      const ring=poly[0].map(toLL), a=ring[0], b=ring[ring.length-1];
+      if(a[0]!==b[0]||a[1]!==b[1]) ring.push(a);
+      const nib=txt(o.nib!=null?o.nib:(o.NIB!=null?o.NIB:'')), base=id0?id0:((nib||'p')+'_'+Math.abs(Math.round(a[0]*1e5))+'_'+Math.abs(Math.round(a[1]*1e5)));
+      const id='dgp_'+base.replace(/[^A-Za-z0-9_-]/g,'_').slice(0,70)+(polys.length>1?'_'+(k+1):'');
+      const luas=num(o.luas)>0?num(o.luas):num(o.luashitung);
+      const props={id,NIB:nib,tipe_hak:mapHak(o.tipehak!=null?o.tipehak:(o.tipe_hak!=null?o.tipe_hak:o.TIPE_HAK))};
+      if(polys.length===1&&luas>0) props.luas=luas;                                              // bagian jamak: luas dihitung dari geometri
+      out.feats.push({type:'Feature',_ext:true,properties:props,geometry:{type:'Polygon',coordinates:[ring]}});
+      out.ext++; if(polys.length>1) parts++;
+    });
+  });
+  out.skipped=noGeom+big;
+  if(parts) out.notes.push(parts+' persil multi-bagian dipecah per bagian');
+  if(holes) out.notes.push(holes+' lubang (enclave) diabaikan');
+  if(big) out.notes.push(big+' poligon >990 titik dilewati');
+  return out;
+}
 async function importBidang(files){
   if(!ALL_P.length){msg('Data belum termuat.',4000);return}
   if(!gate()) return;
   const allById=new Map(ALL_P.map(f=>[f.properties._id,f]));
   for(const file of files){
     let gj; try{gj=JSON.parse(await file.text())}catch(e){msg('“'+file.name+'” bukan file GeoJSON yang valid.',6000);continue}
-    const feats=((gj&&gj.features)||[]).filter(x=>x&&x.properties&&x.properties.id);
-    if(!feats.length){msg('“'+file.name+'”: tidak ada fitur dengan properti id.',6000);continue}
-    const upd=[]; let skip=0, same=0, nNew=0;
+    const conv=persilConvert(gj);              // format persil/BPN (id UUID, nib, tipehak, luas) → bidang digitasi
+    const feats=conv.feats; if(!feats.length){msg('“'+file.name+'”: tidak ada fitur bidang yang bisa dibaca (poligon dengan properti id, atau persil dengan geometri Polygon/MultiPolygon).',8000);continue}
+    const upd=[]; let skip=conv.skipped, same=0, nNew=0;
     feats.forEach(x=>{
       const o=x.properties, id=String(o.id), zn=txt(o.zona);
       const p={NIB:txt(o.NIB),tipe_hak:txt(o.tipe_hak),status:txt(o.status),zona:ZONA[zn]?zn:''};
       if(num(o.luas)>0) p.luas=num(o.luas);
-      const diffAttr=q=>!q||['NIB','tipe_hak','status','zona'].some(k=>(q[k]||'')!==p[k])||(p.luas&&Math.abs((q._luas||0)-p.luas)>0.005);
+      if(x._ext){ delete p.status; delete p.zona }          // file luar tidak membawa status/zona → data yang sudah diisi di aplikasi dipertahankan
+      const diffAttr=q=>!q||['NIB','tipe_hak','status','zona'].some(k=>p[k]!==undefined&&(q[k]||'')!==p[k])||(p.luas&&Math.abs((q._luas||0)-p.luas)>0.005);
       if(allById.has(id)){
         if(diffAttr(allById.get(id).properties)) upd.push({id,p,dig:false}); else same++;
       }else if(id.startsWith('dgp_')&&x.geometry&&x.geometry.type==='Polygon'&&x.geometry.coordinates[0]&&x.geometry.coordinates[0].length>=4){
@@ -1091,7 +1127,7 @@ async function importBidang(files){
       }else skip++;
     });
     if(!upd.length){msg('“'+file.name+'”: tidak ada perubahan ('+same+' bidang sudah sama'+(skip?', '+skip+' dilewati karena id tidak dikenali':'')+').',8000);continue}
-    if(!confirm('Impor “'+file.name+'”:\n• '+(upd.length-nNew)+' bidang yang sudah ada akan DITIMPA\n• '+nNew+' bidang digitasi baru akan dibuat\n• '+same+' sudah sama (tidak diubah)\n• '+skip+' dilewati (id tidak dikenali)\n\nLanjutkan?')) continue;
+    if(!confirm('Impor “'+file.name+'”:\n• '+(upd.length-nNew)+' bidang yang sudah ada akan DITIMPA\n• '+nNew+' bidang digitasi baru akan dibuat'+(conv.ext?' (termasuk '+conv.ext+' persil format luar yang dikonversi)':'')+(conv.notes.length?'\n  ('+conv.notes.join('; ')+')':'')+'\n• '+same+' sudah sama (tidak diubah)\n• '+skip+' dilewati (id tidak dikenali)\n\nLanjutkan?')) continue;
     upd.forEach(u=>{
       if(u.dig) DIGIT.bidang.set(u.id,Object.assign({},DIGIT.bidang.get(u.id)||{},u.p));
       else REMOTE.bidang.set(u.id,Object.assign({},REMOTE.bidang.get(u.id)||{},u.p));
@@ -1115,6 +1151,10 @@ async function importBidang(files){
       }catch(e){cloudFail(e);return}
     }else persistLocal();
     msg('Impor selesai: '+(upd.length-nNew)+' bidang ditimpa, '+nNew+' bidang digitasi baru'+(skip?', '+skip+' dilewati':'')+'.',10000);
+    try{                                                   // zoom ke bidang yang baru diimpor
+      const bs=upd.map(u=>pById.get(u.id)).filter(Boolean).map(f=>f._bb||bboxOf(f.geometry));
+      if(bs.length&&map) map.fitBounds([[Math.min(...bs.map(b=>b[0])),Math.min(...bs.map(b=>b[1]))],[Math.max(...bs.map(b=>b[2])),Math.max(...bs.map(b=>b[3]))]],{padding:70,duration:700,maxZoom:19});
+    }catch(e){}
   }
 }
 $('#btnBidangImp').onclick=()=>$('#bidangIn').click();
