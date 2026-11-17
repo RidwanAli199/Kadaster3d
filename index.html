@@ -305,11 +305,11 @@ const bm=()=>BASEMAPS[S.basemap];
 // Daftar kandidat nama file (dicoba berurutan). Ubah sesuai nama file di repo Anda.
 const DATA={
   bangunan:['data/1_Bangunan_3D_Update (5).geojson','data/export_lod1_dengan_tinggi.geojson','data/bangunan.geojson'],
-  bidang:  ['data/2_Bidang_Tanah_Update (4).geojson','data/bidang_tanah.geojson','data/bidang.geojson'],
+  bidang:  ['data/bidang_gabungan.geojson','data/2_Bidang_Tanah_Update (4).geojson','data/bidang_tanah.geojson','data/bidang.geojson'],
   batas:   ['data/shp_sukarame.geojson','data/shp_sukarame.json','data/batas_kecamatan.geojson','data/batas.geojson'],
   // Persil format luar (id UUID, nib, tipehak, luas…) – SEMUA file yang ada di daftar ini dimuat sebagai bidang tanah.
   // Tambahkan nama file baru di sini bila punya lebih dari satu.
-  persil:  ['data/persil-100-bidang.geojson']      // daftar manual (opsional) – file baru di bawah ini TIDAK perlu didaftarkan
+  persil:  []      // daftar manual (opsional) – file baru di bawah ini TIDAK perlu didaftarkan
 };
 // Persil otomatis: semua file .geojson/.json yang namanya memuat "persil" di folder data/ (dan semua file di data/persil/)
 // ditemukan lewat daftar file GitHub, jadi file baru cukup diunggah ke repo tanpa mengubah index.html.
@@ -538,7 +538,12 @@ function voteJoin(b,lookup){          // bidang dengan titik-sampel bangunan ter
 }
 function rebuildDigit(){
   DIG_P=[];DIG_B=[];
-  DIGIT.bidang.forEach((d,id)=>{ if(id.startsWith('dgp_')&&FILE_BASES.has(id.slice(4))) return; const f=mkDigit('bidang',id,d); if(f) DIG_P.push(f)});
+  const gKey=g=>{let n=0;(function w(c){typeof c[0]==='number'?n++:c.forEach(w)})(g.coordinates);return bboxOf(g).map(v=>v.toFixed(6)).join(',')+'|'+n};
+  const fileKeys=new Map(); ALL_P.forEach(q=>fileKeys.set(gKey(q.geometry),q.properties));   // bidang dari file: kunci = bbox + jumlah titik
+  DIGIT.bidang.forEach((d,id)=>{ if(id.startsWith('dgp_')&&FILE_BASES.has(id.slice(4))) return; const f=mkDigit('bidang',id,d); if(!f) return;
+    const m=fileKeys.get(gKey(f.geometry));                                                   // salinan digitasi yang posisinya SAMA & atributnya sama dengan bidang file → disembunyikan (anti dobel)
+    if(m&&(m.NIB||'')===(f.properties.NIB||'')&&(m.tipe_hak||'')===(f.properties.tipe_hak||'')&&(m.status||'')===(f.properties.status||'')) return;
+    DIG_P.push(f)});
   DIGIT.bangunan.forEach((d,id)=>{const f=mkDigit('bangunan',id,d); if(f) DIG_B.push(f)});
   if(!ALL_P.length||!PGRID) return;
   const rawLookup=(x,y)=>(PGRID.get(Math.floor(x/GCS)+'_'+Math.floor(y/GCS))||[]).map(i=>ALL_P[i]);
